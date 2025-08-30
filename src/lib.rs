@@ -9,3 +9,5 @@
 #![forbid(clippy::perf)]
 #![forbid(clippy::suspicious)]
 #![forbid(future_incompatible)]
+
+pub mod core;
