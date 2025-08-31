@@ -13,7 +13,7 @@
 //! Line and column are 1-based. Offsets are measured in character indices as
 //! reported by the active `CharacterStream` implementation.
 
-use crate::core::parser::tokens::{
+use crate::core::scanner::tokens::{
     SymbolLocation, SymbolSpan, Token, TokenType,
 };
 use std::fmt;
@@ -212,8 +212,8 @@ impl CharacterStream for StringCharacterStream {
 /// # Examples
 ///
 /// ```rust
-/// # use prisma_rs::core::parser::lexer::*;
-/// # use prisma_rs::core::parser::tokens::TokenType;
+/// # use prisma_rs::core::scanner::lexer::*;
+/// # use prisma_rs::core::scanner::tokens::TokenType;
 ///
 /// #[derive(Debug)]
 /// struct MyCustomRecognizer;
@@ -897,7 +897,7 @@ impl Lexer {
     ///
     /// # Examples
     /// ```
-    /// # use prisma_rs::core::parser::lexer::Lexer;
+    /// # use prisma_rs::core::scanner::lexer::Lexer;
     /// let mut it = Lexer::tokenize("model A {}");
     /// while let Some(res) = it.next() {
     ///     let _tok = res?;
