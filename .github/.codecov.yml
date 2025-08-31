@@ -1,0 +1,62 @@
+## Codecov configuration for a Rust project
+#
+# This file tells Codecov how to post status checks and comments on
+# pull requests.  It lives in the root of the repository so that
+# Codecov can automatically pick it up.  According to Codecov’s
+# documentation, repository‑level configuration must be stored in a
+# `codecov.yml` or `.codecov.yml` file at the root, `dev/`, or
+# `.github/` directory of the repository.
+
+# Show a project‑wide coverage status on every pull request.  By
+# default Codecov only posts coverage for the lines changed in the PR
+# (“patch” coverage).  The `coverage.status.project` section below
+# enables an additional status check for the entire project.  Setting
+# `target: auto` means the required coverage is based on the base
+# commit’s coverage; `threshold: 0%` means no drop in coverage is
+# tolerated; and `base: auto` makes Codecov choose the correct base
+# commit.
+coverage:
+  status:
+    project:
+      default:
+        # Use the base commit’s coverage as the target.  This causes
+        # Codecov to flag decreases in overall coverage on a pull
+        # request.  You can change this to a fixed number (e.g. 80%)
+        # if your project has a minimum coverage requirement.
+        target: auto
+        # Allow no percentage drop from the target; increase this if
+        # minor drops should still pass.  Thresholds are specified as
+        # percentages (e.g. 1% would allow the coverage to drop by
+        # one percentage point).
+        threshold: 0%
+        # Use Codecov’s default base selection for comparisons.  The
+        # `base` key is deprecated but remains in examples to clarify
+        # behavior.
+        base: auto
+
+# Configure the pull request comment so that Codecov includes project
+# coverage information.  Without this, the comment only shows the
+# coverage of the changed lines.  The options below follow the
+# example in Codecov’s common configuration recipes:
+comment:
+  # The order in which information is shown in the PR comment.  The
+  # "diff" section shows changes to lines in the pull request, the
+  # "flags" section lists flag‑specific coverage if you use flags, and
+  # the "files" section lists files and their coverage.  Including
+  # "files" ensures that project‑wide coverage appears in the comment.
+  layout: "diff, flags, files"
+  # Use default behavior; this means Codecov will always post a
+  # comment when coverage reports are uploaded.
+  behavior: default
+  # Post the comment even if coverage did not change.  Set this to
+  # true if you only want comments on coverage changes.
+  require_changes: false
+  # Allow comments when no base coverage report exists.
+  require_base: false
+  # Require a coverage report on the head commit before posting a
+  # comment.
+  require_head: true
+  # Show project coverage in the comment.  Setting this to true hides
+  # project coverage and only shows the patch coverage; leaving it
+  # false makes the project coverage visible.
+  hide_project_coverage: false
