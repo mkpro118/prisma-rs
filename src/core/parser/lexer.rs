@@ -826,7 +826,12 @@ impl TokenRecognizer for IdentifierRecognizer {
                     start: pos.clone(),
                     end: pos,
                 };
-                return Err(LexError::new(format!("Default parser does not support non-ASCII characters in identifiers (found \"{ch}\")"),span) );
+                return Err(LexError::new(
+                    format!(
+                        "Default parser does not support non-ASCII characters in identifiers (found \"{ch}\")"
+                    ),
+                    span,
+                ));
             }
             if ch.is_alphanumeric() || ch == '_' {
                 identifier.push(ch);
@@ -908,6 +913,7 @@ impl Lexer {
 
 #[cfg(test)]
 mod tests {
+    #![expect(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -1196,9 +1202,11 @@ mod tests {
     fn test_unicode_characters() {
         let mut lexer = Lexer::default_for_input("non_asciî");
         assert!(lexer.next_token().is_err());
-        assert!(lexer
-            .next_token()
-            .is_err_and(|LexError { message, .. }| message.contains('î')));
+        assert!(
+            lexer
+                .next_token()
+                .is_err_and(|LexError { message, .. }| message.contains('î'))
+        );
     }
 
     #[test]
@@ -1405,8 +1413,10 @@ mod tests {
             "relation" , "title"    , "User"          ,
         ];
         for identifier in expected_identifiers {
-            assert!(token_types
-                .contains(&&TokenType::Identifier(identifier.to_owned())));
+            assert!(
+                token_types
+                    .contains(&&TokenType::Identifier(identifier.to_owned()))
+            );
         }
     }
 

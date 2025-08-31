@@ -1,12 +1,22 @@
 name: Test
-on: [push, pull_request]
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**/*"
+      - "tests/**/*"
+      - ".github/workflows/test.yml"
+  push:
+    paths:
+      - ".github/workflows/test.yml"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: Test ${{ matrix.rust }} on ${{ matrix.os }}
+    name: Test ${{ matrix.rust }} on ${{ matrix.os }} ${{ matrix.feature }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -32,13 +42,14 @@ jobs:
         run: cargo test --workspace ${{ matrix.feature }}
 
   coverage:
-    name: Code coverage
+    name: Code coverage (ubuntu + stable + default features)
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain (stable + llvm-tools)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview

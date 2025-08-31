@@ -1,0 +1,44 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fmt
+        name: fmt
+        entry: cargo
+        args:
+          - --quiet
+          - fmt
+          - --
+          - --color
+          - never
+          - --quiet
+          - --files-with-diff
+        language: system
+        types: [file, rust]
+        stages: [pre-commit]
+      - id: check
+        name: check
+        entry: cargo
+        args:
+          - --quiet
+          - check
+          - --color
+          - never
+          - --tests
+        language: system
+        types: [file, rust]
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: clippy
+        name: clippy
+        entry: cargo
+        args:
+          - clippy
+          - --all-features
+          - --tests
+          - --
+          - -F
+          - "clippy::pedantic"
+        language: system
+        types: [file, rust]
+        pass_filenames: false
+        stages: [pre-push]

@@ -45,25 +45,19 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rs/toolchain@v1
         with:
+          toolchain: stable
           components: clippy
-      - name: Cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          override: true
       - uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features --tests -- -F clippy::pedantic
+          args: "--all-features --tests -- -F clippy::pedantic"
+          name: Clippy Output
 
   audit:
     name: Security Audit
