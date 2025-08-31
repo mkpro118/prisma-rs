@@ -45,6 +45,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - uses: actions/checkout@v5
       - uses: actions-rs/toolchain@v1
