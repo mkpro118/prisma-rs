@@ -9,6 +9,7 @@ pub mod config;
 pub mod context;
 pub mod grammar;
 pub mod progress;
+pub mod schema_parser;
 pub mod stream;
 pub mod traits;
 
@@ -21,5 +22,6 @@ pub use progress::{
 // Re-export main types for convenience
 pub use config::{Diagnostic, DiagnosticSeverity, ParseResult, ParserOptions};
 pub use context::DefaultParserContext;
+pub use schema_parser::{DefaultSchemaParser, SchemaParserBuilder};
 pub use stream::{TokenStreamExt, VectorTokenStream};
 pub use traits::{Parser, SchemaParser, TokenStream};
