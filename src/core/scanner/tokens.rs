@@ -196,7 +196,7 @@ impl Display for TokenType {
 /// # use prisma_rs::core::scanner::SymbolLocation;
 /// let loc = SymbolLocation { line: 2, column: 5 };
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolLocation {
     /// Line number of the position.
     pub line: u32,
@@ -224,7 +224,7 @@ impl From<&SymbolLocation> for (u32, u32) {
 /// };
 /// assert!(span.start.column < span.end.column);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolSpan {
     /// The start location of the span.
     pub start: SymbolLocation,

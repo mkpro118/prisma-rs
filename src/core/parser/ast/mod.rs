@@ -607,7 +607,7 @@ pub struct BlockAttribute {
 /// assert!(q.is_simple());
 /// assert_eq!(q.as_simple().unwrap().text, "String");
 /// ```
-#[derive(Debug, Clone, AstContainerNode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AstContainerNode)]
 pub struct QualifiedIdent {
     /// The identifier parts (e.g., `["db", "VarChar"]`).
     pub parts: Vec<Ident>,
@@ -660,7 +660,7 @@ impl QualifiedIdent {
 /// assert_eq!(named.node_type(), "NamedType");
 /// assert_eq!(list.node_type(), "ListType");
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
     /// A named type (scalar, enum, or model reference).
     Named(NamedType),
@@ -713,7 +713,7 @@ impl AstNode for TypeRef {
 /// };
 /// assert_eq!(nt.node_type(), "NamedType");
 /// ```
-#[derive(Debug, Clone, AstContainerNode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AstContainerNode)]
 pub struct NamedType {
     /// The type name (may be qualified for built-ins).
     pub name: QualifiedIdent,
@@ -743,7 +743,7 @@ pub struct NamedType {
 /// let list = ListType { inner: Box::new(inner), span: sp((1,1),(1,6)) };
 /// assert_eq!(list.node_type(), "ListType");
 /// ```
-#[derive(Debug, Clone, AstContainerNode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AstContainerNode)]
 pub struct ListType {
     /// The inner type.
     pub inner: Box<TypeRef>,
@@ -1076,7 +1076,7 @@ impl AstNode for ObjectKey {}
 /// An identifier with its source text and span.
 ///
 /// Keeps the original identifier text and a span over it.
-#[derive(Debug, Clone, AstLeafNode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AstLeafNode)]
 pub struct Ident {
     /// The identifier text.
     pub text: String,

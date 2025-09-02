@@ -3,6 +3,7 @@
 //! This module contains the complete parser implementation including AST definitions,
 //! parser logic, and supporting utilities.
 
+pub mod archive;
 pub mod ast;
 pub mod components;
 pub mod config;
