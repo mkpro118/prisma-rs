@@ -33,32 +33,24 @@ const RESERVED_KEYWORDS: &[&str] = &[
 /// - Datasources and generators
 /// - Type aliases (when experimental features are enabled)
 ///
-/// The symbol collector also validates that symbol names are unique within
-/// their respective scopes and follows Prisma naming conventions.
-pub struct SymbolCollectionAnalyzer {
-    /// Tracks whether we're currently processing experimental features
-    processing_experimental: bool,
-}
+/// The symbol collector validates basic identifier rules (non-empty, non-reserved).
+pub struct SymbolCollectionAnalyzer;
 
 impl SymbolCollectionAnalyzer {
     /// Create a new symbol collection analyzer.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            processing_experimental: false,
-        }
+        Self
     }
 
-    /// Validate that an identifier follows Prisma naming conventions.
+    /// Validate that an identifier follows basic validation rules.
     ///
     /// # Errors
     ///
     /// Returns a `SemanticDiagnostic` if the identifier:
     /// - Is empty
     /// - Uses a reserved keyword
-    /// - Doesn't follow the appropriate naming convention
     fn validate_identifier(
-        &self,
         name: &str,
         span: &crate::core::scanner::tokens::SymbolSpan,
     ) -> Result<(), Box<SemanticDiagnostic>> {
@@ -82,105 +74,28 @@ impl SymbolCollectionAnalyzer {
             )));
         }
 
-        // Check naming convention (PascalCase for types, camelCase for fields)
-        if !self.processing_experimental
-            && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-        {
-            // This is likely a field or value - validate camelCase
-            if !Self::is_camel_case(name) {
-                return Err(Box::new(SemanticDiagnostic::warning(
-                    span.clone(),
-                    format!(
-                        "Field '{name}' should use camelCase naming convention"
-                    ),
-                    DiagnosticCode::NamingConvention,
-                )));
-            }
-        } else if !Self::is_pascal_case(name) {
-            return Err(Box::new(SemanticDiagnostic::warning(
-                span.clone(),
-                format!(
-                    "Type '{name}' should use PascalCase naming convention"
-                ),
-                DiagnosticCode::NamingConvention,
-            )));
-        }
+        // Prisma allows all valid JavaScript identifiers that don't start with
+        // underscores/digits and don't contain '$' - these are validated by the lexer,
+        // so no additional restrictions are needed here for compliance
 
         Ok(())
     }
 
-    /// Check if a name follows `camelCase` convention.
-    ///
-    /// Returns `true` if the name starts with a lowercase letter and contains
-    /// only alphanumeric characters (no underscores).
-    fn is_camel_case(name: &str) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-
-        let mut chars = name.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-
-        // First character should be lowercase
-        if !first.is_ascii_lowercase() {
-            return false;
-        }
-
-        // Rest should be alphanumeric, no underscores allowed in camelCase
-        for ch in chars {
-            if !ch.is_ascii_alphanumeric() {
-                return false; // Invalid character (including underscores)
-            }
-        }
-
-        true
-    }
-
-    /// Check if a name follows `PascalCase` convention.
-    ///
-    /// Returns `true` if the name starts with an uppercase letter and contains
-    /// only alphanumeric characters (no underscores).
-    fn is_pascal_case(name: &str) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-
-        let mut chars = name.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-
-        // First character should be uppercase
-        if !first.is_ascii_uppercase() {
-            return false;
-        }
-
-        // Rest should be alphanumeric, no underscores in PascalCase
-        for ch in chars {
-            if !ch.is_ascii_alphanumeric() {
-                return false;
-            }
-        }
-
-        true
-    }
-
     fn check_model(
-        &self,
         model: &crate::core::parser::ast::ModelDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         if let Err(diagnostic) =
-            self.validate_identifier(&model.name.text, &model.name.span)
+            Self::validate_identifier(&model.name.text, &model.name.span)
         {
             diagnostics.push(*diagnostic);
         }
         for member in &model.members {
             if let ModelMember::Field(field) = member
-                && let Err(diagnostic) =
-                    self.validate_identifier(&field.name.text, &field.name.span)
+                && let Err(diagnostic) = Self::validate_identifier(
+                    &field.name.text,
+                    &field.name.span,
+                )
             {
                 diagnostics.push(*diagnostic);
             }
@@ -188,19 +103,21 @@ impl SymbolCollectionAnalyzer {
     }
 
     fn check_enum(
-        &self,
         enum_decl: &crate::core::parser::ast::EnumDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        if let Err(diagnostic) =
-            self.validate_identifier(&enum_decl.name.text, &enum_decl.name.span)
-        {
+        if let Err(diagnostic) = Self::validate_identifier(
+            &enum_decl.name.text,
+            &enum_decl.name.span,
+        ) {
             diagnostics.push(*diagnostic);
         }
         for member in &enum_decl.members {
             if let EnumMember::Value(value) = member
-                && let Err(diagnostic) =
-                    self.validate_identifier(&value.name.text, &value.name.span)
+                && let Err(diagnostic) = Self::validate_identifier(
+                    &value.name.text,
+                    &value.name.span,
+                )
             {
                 diagnostics.push(*diagnostic);
             }
@@ -208,13 +125,13 @@ impl SymbolCollectionAnalyzer {
     }
 
     fn check_datasource(
-        &self,
         datasource: &crate::core::parser::ast::DatasourceDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        if let Err(diagnostic) = self
-            .validate_identifier(&datasource.name.text, &datasource.name.span)
-        {
+        if let Err(diagnostic) = Self::validate_identifier(
+            &datasource.name.text,
+            &datasource.name.span,
+        ) {
             diagnostics.push(*diagnostic);
         }
         let has_provider = datasource
@@ -244,13 +161,13 @@ impl SymbolCollectionAnalyzer {
     }
 
     fn check_generator(
-        &self,
         generator: &crate::core::parser::ast::GeneratorDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        if let Err(diagnostic) =
-            self.validate_identifier(&generator.name.text, &generator.name.span)
-        {
+        if let Err(diagnostic) = Self::validate_identifier(
+            &generator.name.text,
+            &generator.name.span,
+        ) {
             diagnostics.push(*diagnostic);
         }
         let has_provider = generator
@@ -268,13 +185,12 @@ impl SymbolCollectionAnalyzer {
     }
 
     fn check_type_alias(
-        &self,
         type_alias: &crate::core::parser::ast::TypeDecl,
         context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         if context.options().features.validate_experimental {
-            if let Err(diagnostic) = self.validate_identifier(
+            if let Err(diagnostic) = Self::validate_identifier(
                 &type_alias.name.text,
                 &type_alias.name.span,
             ) {
@@ -311,7 +227,7 @@ impl SymbolCollectionAnalyzer {
 
 impl Default for SymbolCollectionAnalyzer {
     fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
@@ -331,19 +247,19 @@ impl PhaseAnalyzer for SymbolCollectionAnalyzer {
         for declaration in &schema.declarations {
             match declaration {
                 Declaration::Model(model) => {
-                    self.check_model(model, &mut diagnostics);
+                    Self::check_model(model, &mut diagnostics);
                 }
                 Declaration::Enum(enum_decl) => {
-                    self.check_enum(enum_decl, &mut diagnostics);
+                    Self::check_enum(enum_decl, &mut diagnostics);
                 }
                 Declaration::Datasource(datasource) => {
-                    self.check_datasource(datasource, &mut diagnostics);
+                    Self::check_datasource(datasource, &mut diagnostics);
                 }
                 Declaration::Generator(generator) => {
-                    self.check_generator(generator, &mut diagnostics);
+                    Self::check_generator(generator, &mut diagnostics);
                 }
                 Declaration::Type(type_alias) => {
-                    self.check_type_alias(
+                    Self::check_type_alias(
                         type_alias,
                         context,
                         &mut diagnostics,
@@ -392,24 +308,41 @@ mod tests {
 
     #[test]
     fn test_validate_identifier_valid_names() {
-        let analyzer = SymbolCollectionAnalyzer::new();
         let span = create_test_span();
 
-        // Valid PascalCase
-        assert!(analyzer.validate_identifier("User", &span).is_ok());
-        assert!(analyzer.validate_identifier("UserProfile", &span).is_ok());
-
-        // Valid camelCase
-        assert!(analyzer.validate_identifier("firstName", &span).is_ok());
-        assert!(analyzer.validate_identifier("userId", &span).is_ok());
+        // Valid identifiers (Prisma allows all valid JS identifiers)
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("User", &span)
+                .is_ok()
+        );
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("UserProfile", &span)
+                .is_ok()
+        );
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("firstName", &span)
+                .is_ok()
+        );
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("userId", &span)
+                .is_ok()
+        );
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("user_id", &span)
+                .is_ok()
+        ); // snake_case is valid
+        assert!(
+            SymbolCollectionAnalyzer::validate_identifier("someField", &span)
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_validate_identifier_reserved_keywords() {
-        let analyzer = SymbolCollectionAnalyzer::new();
         let span = create_test_span();
 
-        let result = analyzer.validate_identifier("model", &span);
+        let result =
+            SymbolCollectionAnalyzer::validate_identifier("model", &span);
         assert!(result.is_err());
 
         let Err(err) = result else {
@@ -421,59 +354,15 @@ mod tests {
 
     #[test]
     fn test_validate_identifier_empty_name() {
-        let analyzer = SymbolCollectionAnalyzer::new();
         let span = create_test_span();
 
-        let result = analyzer.validate_identifier("", &span);
+        let result = SymbolCollectionAnalyzer::validate_identifier("", &span);
         assert!(result.is_err());
 
         let Err(err) = result else {
             panic!("Expected validation to fail for empty identifier")
         };
         assert_eq!(err.diagnostic_code, DiagnosticCode::InvalidIdentifier);
-    }
-
-    #[test]
-    fn test_naming_conventions() {
-        let _analyzer = SymbolCollectionAnalyzer::new();
-
-        // Test camelCase validation
-        assert!(SymbolCollectionAnalyzer::is_camel_case("camelCase"));
-        assert!(SymbolCollectionAnalyzer::is_camel_case("firstName"));
-        assert!(SymbolCollectionAnalyzer::is_camel_case("userId"));
-        assert!(!SymbolCollectionAnalyzer::is_camel_case("PascalCase"));
-        assert!(!SymbolCollectionAnalyzer::is_camel_case("snake_case"));
-
-        // Test PascalCase validation
-        assert!(SymbolCollectionAnalyzer::is_pascal_case("PascalCase"));
-        assert!(SymbolCollectionAnalyzer::is_pascal_case("User"));
-        assert!(SymbolCollectionAnalyzer::is_pascal_case("UserProfile"));
-        assert!(!SymbolCollectionAnalyzer::is_pascal_case("camelCase"));
-        assert!(!SymbolCollectionAnalyzer::is_pascal_case("snake_case"));
-    }
-
-    #[test]
-    fn test_validate_identifier_naming_convention_warnings() {
-        let analyzer = SymbolCollectionAnalyzer::new();
-        let span = create_test_span();
-
-        // snake_case should trigger naming convention warning
-        let res = analyzer.validate_identifier("first_name", &span);
-        assert!(res.is_err());
-        let Err(diag) = res else {
-            panic!("Expected warning diagnostic")
-        };
-        assert_eq!(diag.diagnostic_code, DiagnosticCode::NamingConvention);
-        assert!(diag.is_warning());
-
-        // PascalCase with underscore should warn
-        let res2 = analyzer.validate_identifier("User_Profile", &span);
-        assert!(res2.is_err());
-        let Err(diag2) = res2 else {
-            panic!("Expected warning diagnostic")
-        };
-        assert_eq!(diag2.diagnostic_code, DiagnosticCode::NamingConvention);
-        assert!(diag2.is_warning());
     }
 
     fn sp(s: (u32, u32), e: (u32, u32)) -> SymbolSpan {
@@ -610,5 +499,564 @@ mod tests {
                 .all(|d| d.diagnostic_code
                     != DiagnosticCode::ExperimentalFeature)
         );
+    }
+
+    #[test]
+    fn test_all_reserved_keywords() {
+        let reserved_words = [
+            "model",
+            "enum",
+            "datasource",
+            "generator",
+            "type",
+            "true",
+            "false",
+            "null",
+            "undefined",
+        ];
+
+        for reserved_word in &reserved_words {
+            let span = create_test_span();
+            let result = SymbolCollectionAnalyzer::validate_identifier(
+                reserved_word,
+                &span,
+            );
+
+            assert!(
+                result.is_err(),
+                "Expected {reserved_word} to be rejected as reserved"
+            );
+            if let Err(diagnostic) = result {
+                assert_eq!(
+                    diagnostic.diagnostic_code,
+                    DiagnosticCode::ReservedKeyword
+                );
+                assert!(diagnostic.message.contains("reserved keyword"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_various_valid_identifier_formats() {
+        let valid_identifiers = [
+            "user",
+            "User",
+            "userId",
+            "UserProfile",
+            "user_id",
+            "user123",
+            "a",
+            "A",
+            "myVeryLongIdentifierName",
+            "snake_case_field",
+            "camelCaseField",
+            "PascalCaseType",
+            "mixedCase123",
+            "field1",
+        ];
+
+        for identifier in &valid_identifiers {
+            let span = create_test_span();
+            let result = SymbolCollectionAnalyzer::validate_identifier(
+                identifier, &span,
+            );
+            assert!(result.is_ok(), "Expected {identifier} to be valid");
+        }
+    }
+
+    #[test]
+    fn test_model_with_various_field_types() {
+        let fields = vec![
+            ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "id".to_string(),
+                    span: sp((1, 1), (1, 3)),
+                },
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "String".to_string(),
+                            span: sp((1, 4), (1, 10)),
+                        }],
+                        span: sp((1, 4), (1, 10)),
+                    },
+                    span: sp((1, 4), (1, 10)),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: sp((1, 1), (1, 10)),
+            }),
+            ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "name".to_string(),
+                    span: sp((2, 1), (2, 5)),
+                },
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "String".to_string(),
+                            span: sp((2, 6), (2, 12)),
+                        }],
+                        span: sp((2, 6), (2, 12)),
+                    },
+                    span: sp((2, 6), (2, 12)),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: sp((2, 1), (2, 12)),
+            }),
+        ];
+
+        let model = ModelDecl {
+            name: Ident {
+                text: "User".to_string(),
+                span: sp((1, 7), (1, 11)),
+            },
+            members: fields,
+            attrs: Vec::new(),
+            docs: None,
+            span: sp((1, 1), (3, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: sp((1, 1), (3, 1)),
+        };
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        // Should not have any identifier validation errors
+        assert!(
+            result.diagnostics.iter().all(|d| d.diagnostic_code
+                != DiagnosticCode::InvalidIdentifier
+                && d.diagnostic_code != DiagnosticCode::ReservedKeyword)
+        );
+    }
+
+    #[test]
+    fn test_enum_with_various_values() {
+        let values = vec![
+            EnumMember::Value(EnumValue {
+                name: Ident {
+                    text: "ACTIVE".to_string(),
+                    span: sp((1, 1), (1, 7)),
+                },
+                attrs: Vec::new(),
+                docs: None,
+                span: sp((1, 1), (1, 7)),
+            }),
+            EnumMember::Value(EnumValue {
+                name: Ident {
+                    text: "INACTIVE".to_string(),
+                    span: sp((2, 1), (2, 9)),
+                },
+                attrs: Vec::new(),
+                docs: None,
+                span: sp((2, 1), (2, 9)),
+            }),
+            EnumMember::Value(EnumValue {
+                name: Ident {
+                    text: "pending".to_string(),
+                    span: sp((3, 1), (3, 8)),
+                },
+                attrs: Vec::new(),
+                docs: None,
+                span: sp((3, 1), (3, 8)),
+            }),
+        ];
+
+        let enum_decl = EnumDecl {
+            name: Ident {
+                text: "Status".to_string(),
+                span: sp((1, 6), (1, 12)),
+            },
+            members: values,
+            attrs: Vec::new(),
+            docs: None,
+            span: sp((1, 1), (4, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Enum(enum_decl)],
+            span: sp((1, 1), (4, 1)),
+        };
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        // Should not have identifier validation errors for valid enum values
+        assert!(
+            result.diagnostics.iter().all(|d| d.diagnostic_code
+                != DiagnosticCode::InvalidIdentifier
+                && d.diagnostic_code != DiagnosticCode::ReservedKeyword)
+        );
+    }
+
+    #[test]
+    fn test_datasource_with_all_required_fields() {
+        let datasource = DatasourceDecl {
+            name: Ident {
+                text: "db".to_string(),
+                span: sp((1, 11), (1, 13)),
+            },
+            assignments: vec![
+                Assignment {
+                    key: Ident {
+                        text: "provider".to_string(),
+                        span: sp((2, 3), (2, 11)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "postgresql".to_string(),
+                        span: sp((2, 14), (2, 26)),
+                    }),
+                    docs: None,
+                    span: sp((2, 3), (2, 26)),
+                },
+                Assignment {
+                    key: Ident {
+                        text: "url".to_string(),
+                        span: sp((3, 3), (3, 6)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "env(\"DATABASE_URL\")".to_string(),
+                        span: sp((3, 9), (3, 29)),
+                    }),
+                    docs: None,
+                    span: sp((3, 3), (3, 29)),
+                },
+            ],
+            docs: None,
+            span: sp((1, 1), (4, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Datasource(datasource)],
+            span: sp((1, 1), (4, 1)),
+        };
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        // Should not have missing field errors
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.diagnostic_code != DiagnosticCode::MissingField)
+        );
+    }
+
+    #[test]
+    fn test_generator_with_all_required_fields() {
+        let generator = GeneratorDecl {
+            name: Ident {
+                text: "client".to_string(),
+                span: sp((1, 11), (1, 17)),
+            },
+            assignments: vec![Assignment {
+                key: Ident {
+                    text: "provider".to_string(),
+                    span: sp((2, 3), (2, 11)),
+                },
+                value: Expr::StringLit(StringLit {
+                    value: "prisma-client-js".to_string(),
+                    span: sp((2, 14), (2, 32)),
+                }),
+                docs: None,
+                span: sp((2, 3), (2, 32)),
+            }],
+            docs: None,
+            span: sp((1, 1), (3, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Generator(generator)],
+            span: sp((1, 1), (3, 1)),
+        };
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        // Should not have missing field errors
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.diagnostic_code != DiagnosticCode::MissingField)
+        );
+    }
+
+    /// Create a complex test schema with all declaration types for testing.
+    fn create_complex_test_schema() -> Schema {
+        let user_model = create_test_user_model();
+        let status_enum = create_test_status_enum();
+        let datasource = create_test_datasource();
+        let generator = create_test_generator();
+
+        Schema {
+            declarations: vec![
+                Declaration::Model(user_model),
+                Declaration::Enum(status_enum),
+                Declaration::Datasource(datasource),
+                Declaration::Generator(generator),
+            ],
+            span: sp((1, 1), (16, 1)),
+        }
+    }
+
+    /// Create a test User model declaration.
+    fn create_test_user_model() -> ModelDecl {
+        ModelDecl {
+            name: Ident {
+                text: "User".to_string(),
+                span: sp((1, 7), (1, 11)),
+            },
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "id".to_string(),
+                    span: sp((2, 3), (2, 5)),
+                },
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "String".to_string(),
+                            span: sp((2, 6), (2, 12)),
+                        }],
+                        span: sp((2, 6), (2, 12)),
+                    },
+                    span: sp((2, 6), (2, 12)),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: sp((2, 3), (2, 12)),
+            })],
+            attrs: Vec::new(),
+            docs: None,
+            span: sp((1, 1), (3, 1)),
+        }
+    }
+
+    /// Create a test Status enum declaration.
+    fn create_test_status_enum() -> EnumDecl {
+        EnumDecl {
+            name: Ident {
+                text: "Status".to_string(),
+                span: sp((5, 6), (5, 12)),
+            },
+            members: vec![EnumMember::Value(EnumValue {
+                name: Ident {
+                    text: "ACTIVE".to_string(),
+                    span: sp((6, 3), (6, 9)),
+                },
+                attrs: Vec::new(),
+                docs: None,
+                span: sp((6, 3), (6, 9)),
+            })],
+            attrs: Vec::new(),
+            docs: None,
+            span: sp((5, 1), (7, 1)),
+        }
+    }
+
+    /// Create a test datasource declaration.
+    fn create_test_datasource() -> DatasourceDecl {
+        DatasourceDecl {
+            name: Ident {
+                text: "db".to_string(),
+                span: sp((9, 11), (9, 13)),
+            },
+            assignments: vec![
+                Assignment {
+                    key: Ident {
+                        text: "provider".to_string(),
+                        span: sp((10, 3), (10, 11)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "postgresql".to_string(),
+                        span: sp((10, 14), (10, 26)),
+                    }),
+                    docs: None,
+                    span: sp((10, 3), (10, 26)),
+                },
+                Assignment {
+                    key: Ident {
+                        text: "url".to_string(),
+                        span: sp((11, 3), (11, 6)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "env(\"DATABASE_URL\")".to_string(),
+                        span: sp((11, 9), (11, 29)),
+                    }),
+                    docs: None,
+                    span: sp((11, 3), (11, 29)),
+                },
+            ],
+            docs: None,
+            span: sp((9, 1), (12, 1)),
+        }
+    }
+
+    /// Create a test generator declaration.
+    fn create_test_generator() -> GeneratorDecl {
+        GeneratorDecl {
+            name: Ident {
+                text: "client".to_string(),
+                span: sp((14, 11), (14, 17)),
+            },
+            assignments: vec![Assignment {
+                key: Ident {
+                    text: "provider".to_string(),
+                    span: sp((15, 3), (15, 11)),
+                },
+                value: Expr::StringLit(StringLit {
+                    value: "prisma-client-js".to_string(),
+                    span: sp((15, 14), (15, 32)),
+                }),
+                docs: None,
+                span: sp((15, 3), (15, 32)),
+            }],
+            docs: None,
+            span: sp((14, 1), (16, 1)),
+        }
+    }
+
+    /// Assert that no problematic diagnostics are present in the results.
+    fn assert_no_problematic_diagnostics(diagnostics: &[SemanticDiagnostic]) {
+        let problematic_diagnostics: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.diagnostic_code,
+                    DiagnosticCode::InvalidIdentifier
+                        | DiagnosticCode::ReservedKeyword
+                        | DiagnosticCode::MissingField
+                )
+            })
+            .collect();
+
+        assert!(
+            problematic_diagnostics.is_empty(),
+            "Unexpected validation errors: {problematic_diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_complex_schema_with_all_declaration_types() {
+        let schema = create_complex_test_schema();
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        assert_no_problematic_diagnostics(&result.diagnostics);
+    }
+
+    #[test]
+    fn test_identifier_validation_edge_cases() {
+        let edge_cases = [
+            ("", true, DiagnosticCode::InvalidIdentifier), // Empty string
+            ("123invalid", false, DiagnosticCode::InvalidIdentifier), // This should be caught by lexer, so we won't test it
+            ("valid123", false, DiagnosticCode::InvalidIdentifier),
+            ("_underscore", false, DiagnosticCode::InvalidIdentifier), // This should be caught by lexer
+            ("validName", false, DiagnosticCode::InvalidIdentifier),
+        ];
+
+        for (identifier, should_error, expected_code) in &edge_cases {
+            if identifier == &"123invalid" || identifier == &"_underscore" {
+                // These would be caught by the lexer, so skip testing them here
+                continue;
+            }
+
+            let span = create_test_span();
+            let result = SymbolCollectionAnalyzer::validate_identifier(
+                identifier, &span,
+            );
+
+            if *should_error {
+                assert!(result.is_err(), "Expected {identifier} to be invalid");
+                if let Err(diagnostic) = result {
+                    assert_eq!(diagnostic.diagnostic_code, *expected_code);
+                }
+            } else {
+                assert!(result.is_ok(), "Expected {identifier} to be valid");
+            }
+        }
+    }
+
+    #[test]
+    fn test_schema_with_datasource_present() {
+        let datasource = DatasourceDecl {
+            name: Ident {
+                text: "db".to_string(),
+                span: sp((1, 11), (1, 13)),
+            },
+            assignments: vec![
+                Assignment {
+                    key: Ident {
+                        text: "provider".to_string(),
+                        span: sp((2, 3), (2, 11)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "postgresql".to_string(),
+                        span: sp((2, 14), (2, 26)),
+                    }),
+                    docs: None,
+                    span: sp((2, 3), (2, 26)),
+                },
+                Assignment {
+                    key: Ident {
+                        text: "url".to_string(),
+                        span: sp((3, 3), (3, 6)),
+                    },
+                    value: Expr::StringLit(StringLit {
+                        value: "env(\"DATABASE_URL\")".to_string(),
+                        span: sp((3, 9), (3, 29)),
+                    }),
+                    docs: None,
+                    span: sp((3, 3), (3, 29)),
+                },
+            ],
+            docs: None,
+            span: sp((1, 1), (4, 1)),
+        };
+
+        let model = ModelDecl {
+            name: Ident {
+                text: "User".to_string(),
+                span: sp((5, 7), (5, 11)),
+            },
+            members: vec![],
+            attrs: Vec::new(),
+            docs: None,
+            span: sp((5, 1), (6, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Datasource(datasource),
+                Declaration::Model(model),
+            ],
+            span: sp((1, 1), (6, 1)),
+        };
+
+        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        // Should not have missing datasource warning
+        assert!(!result.diagnostics.iter().any(|d|
+            d.diagnostic_code == DiagnosticCode::MissingDatasource
+        ));
     }
 }

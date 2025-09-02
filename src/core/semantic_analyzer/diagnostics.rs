@@ -197,7 +197,9 @@ pub enum DiagnosticCode {
     UnknownType,
     CircularDependency,
     InvalidTypeModifier,
+    InvalidTypeUsage,
     TypeConstraintViolation,
+    ConstraintViolation,
     IncompatibleTypes,
 
     // Relationship Errors
@@ -256,8 +258,10 @@ impl DiagnosticCode {
             DiagnosticCode::UnknownType => "E102",
             DiagnosticCode::CircularDependency => "E103",
             DiagnosticCode::InvalidTypeModifier => "E104",
-            DiagnosticCode::TypeConstraintViolation => "E105",
-            DiagnosticCode::IncompatibleTypes => "E106",
+            DiagnosticCode::InvalidTypeUsage => "E105",
+            DiagnosticCode::TypeConstraintViolation => "E106",
+            DiagnosticCode::ConstraintViolation => "E107",
+            DiagnosticCode::IncompatibleTypes => "E108",
             DiagnosticCode::InvalidRelation => "E201",
             DiagnosticCode::MissingBackReference => "E202",
             DiagnosticCode::ConflictingRelations => "E203",
@@ -308,7 +312,9 @@ impl DiagnosticCode {
             | DiagnosticCode::UnknownType
             | DiagnosticCode::CircularDependency
             | DiagnosticCode::InvalidTypeModifier
+            | DiagnosticCode::InvalidTypeUsage
             | DiagnosticCode::TypeConstraintViolation
+            | DiagnosticCode::ConstraintViolation
             | DiagnosticCode::IncompatibleTypes => {
                 DiagnosticCategory::TypeSystem
             }

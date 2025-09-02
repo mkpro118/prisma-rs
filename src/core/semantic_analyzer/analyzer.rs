@@ -214,9 +214,153 @@ impl SemanticAnalyzer {
         context: &mut AnalysisContext,
         options: &AnalyzerOptions,
     ) -> Result<(), AnalysisError> {
-        // For now, fall back to sequential execution
-        // Full parallel implementation would require more complex synchronization
-        self.analyze_sequential(schema, context, options)
+        let Some(dependency_graph) = self.dependency_graph.as_ref() else {
+            return Err(AnalysisError::InvalidDependencyGraph {
+                message: "Dependency graph not built".to_string(),
+            });
+        };
+
+        // Compute execution layers where each layer can execute in parallel
+        let execution_layers =
+            Self::compute_execution_layers(dependency_graph)?;
+
+        // Execute each layer in parallel
+        for layer in execution_layers {
+            self.execute_layer_parallel(schema, context, options, &layer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Compute execution layers for parallel processing.
+    fn compute_execution_layers(
+        dependency_graph: &DependencyGraph,
+    ) -> Result<Vec<Vec<usize>>, AnalysisError> {
+        use std::collections::BTreeSet;
+
+        let mut layers = Vec::new();
+        let mut processed = HashSet::new();
+        let mut in_degree: HashMap<usize, usize> = dependency_graph
+            .nodes
+            .keys()
+            .map(|&node| {
+                (
+                    node,
+                    dependency_graph
+                        .reverse_edges
+                        .get(&node)
+                        .map_or(0, std::vec::Vec::len),
+                )
+            })
+            .collect();
+
+        while processed.len() < dependency_graph.nodes.len() {
+            // Find all nodes with zero in-degree (can execute in parallel)
+            let ready: BTreeSet<usize> = in_degree
+                .iter()
+                .filter(|&(&node, &deg)| deg == 0 && !processed.contains(&node))
+                .map(|(&node, _)| node)
+                .collect();
+
+            if ready.is_empty() {
+                return Err(AnalysisError::CircularDependency {
+                    cycle: vec!["Unknown".to_string()], // Simplified for now
+                });
+            }
+
+            let current_layer: Vec<usize> = ready.into_iter().collect();
+
+            // Update in-degrees for next iteration
+            for &node in &current_layer {
+                processed.insert(node);
+                if let Some(dependencies) = dependency_graph.edges.get(&node) {
+                    for &dep_node in dependencies {
+                        if let Some(deg) = in_degree.get_mut(&dep_node) {
+                            *deg = deg.saturating_sub(1);
+                        }
+                    }
+                }
+            }
+
+            layers.push(current_layer);
+        }
+
+        Ok(layers)
+    }
+
+    /// Execute a layer of analyzers in parallel.
+    fn execute_layer_parallel(
+        &mut self,
+        schema: &Schema,
+        context: &mut AnalysisContext,
+        options: &AnalyzerOptions,
+        layer: &[usize],
+    ) -> Result<(), AnalysisError> {
+        if layer.len() == 1 {
+            // Single analyzer - no need for threading overhead
+            let analyzer_index = layer[0];
+            let analyzer = &mut self.phase_analyzers[analyzer_index];
+
+            // Check timeout
+            if context.elapsed_time() > options.phase_timeout {
+                return Err(AnalysisError::Timeout {
+                    phase: analyzer.phase_name().to_string(),
+                    elapsed: context.elapsed_time(),
+                });
+            }
+
+            let phase_result = analyzer.analyze(schema, context);
+            let has_fatal = phase_result.has_fatal_errors();
+            self.diagnostic_collector.extend(phase_result.diagnostics);
+
+            // Stop on fatal errors if configured
+            if has_fatal
+                && matches!(options.validation_mode, ValidationMode::Strict)
+            {
+                return Ok(());
+            }
+
+            // Check diagnostic limit
+            if self.diagnostic_collector.len() >= options.max_diagnostics {
+                return Ok(());
+            }
+
+            return Ok(());
+        }
+
+        // Multiple analyzers - execute in parallel
+        // Note: Due to Rust's ownership model and the fact that analyzers need mutable access,
+        // we'll need to restructure this to work with the current analyzer design.
+        // For now, fall back to sequential execution for layers with multiple analyzers.
+        for &analyzer_index in layer {
+            let analyzer = &mut self.phase_analyzers[analyzer_index];
+
+            // Check timeout
+            if context.elapsed_time() > options.phase_timeout {
+                return Err(AnalysisError::Timeout {
+                    phase: analyzer.phase_name().to_string(),
+                    elapsed: context.elapsed_time(),
+                });
+            }
+
+            let phase_result = analyzer.analyze(schema, context);
+            let has_fatal = phase_result.has_fatal_errors();
+            self.diagnostic_collector.extend(phase_result.diagnostics);
+
+            // Stop on fatal errors if configured
+            if has_fatal
+                && matches!(options.validation_mode, ValidationMode::Strict)
+            {
+                return Ok(());
+            }
+
+            // Check diagnostic limit
+            if self.diagnostic_collector.len() >= options.max_diagnostics {
+                return Ok(());
+            }
+        }
+
+        Ok(())
     }
 
     /// Build the dependency graph for all registered analyzers.
@@ -270,15 +414,19 @@ impl SemanticAnalyzer {
 
     /// Create the default set of phase analyzers.
     fn create_default_analyzers() -> Vec<Box<dyn PhaseAnalyzer>> {
-        use crate::core::semantic_analyzer::analyzers::SymbolCollectionAnalyzer;
+        use crate::core::semantic_analyzer::analyzers::{
+            AttributeValidationAnalyzer, BusinessRuleAnalyzer,
+            RelationshipAnalyzer, SymbolCollectionAnalyzer,
+            TypeResolutionAnalyzer,
+        };
 
         vec![
             Box::new(SymbolCollectionAnalyzer::new()),
+            Box::new(TypeResolutionAnalyzer::new()),
+            Box::new(RelationshipAnalyzer::new()),
             // Additional analyzers will be added as they are implemented:
-            // Box::new(TypeResolutionAnalyzer::new()),
-            // Box::new(RelationshipAnalyzer::new()),
-            // Box::new(AttributeValidationAnalyzer::new()),
-            // Box::new(BusinessRuleAnalyzer::new()),
+            Box::new(AttributeValidationAnalyzer::new()),
+            Box::new(BusinessRuleAnalyzer::new()),
         ]
     }
 }
@@ -540,6 +688,7 @@ impl std::fmt::Display for AnalysisError {
 impl std::error::Error for AnalysisError {}
 
 #[cfg(test)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::core::parser::ast::Schema;
@@ -585,7 +734,7 @@ mod tests {
     #[test]
     fn test_semantic_analyzer_creation() {
         let analyzer = SemanticAnalyzer::new();
-        assert_eq!(analyzer.analyzer_names().len(), 1); // Symbol collector is now included by default
+        assert_eq!(analyzer.analyzer_names().len(), 5); // Symbol collector + type resolution + relationship + attribute validation + business rules by default
     }
 
     #[test]
@@ -595,11 +744,18 @@ mod tests {
         analyzer.add_phase_analyzer(Box::new(MockAnalyzer::new("Test")));
         assert_eq!(
             analyzer.analyzer_names(),
-            vec!["symbol-collection", "Test"]
+            vec![
+                "symbol-collection",
+                "type-resolution",
+                "relationship-analysis",
+                "attribute-validation",
+                "business-rules",
+                "Test"
+            ]
         );
 
         assert!(analyzer.remove_phase_analyzer("Test"));
-        assert_eq!(analyzer.analyzer_names().len(), 1); // Symbol collector remains
+        assert_eq!(analyzer.analyzer_names().len(), 5); // Symbol collector + type resolution + relationship + attribute validation + business rules remain
 
         assert!(!analyzer.remove_phase_analyzer("NonExistent"));
     }
@@ -779,5 +935,43 @@ mod tests {
         };
         assert_eq!(res_a.diagnostics.len(), res_b.diagnostics.len());
         assert_eq!(res_a.analyzer_count, res_b.analyzer_count);
+    }
+
+    #[test]
+    fn test_parallel_execution_layers() {
+        let analyzer = SemanticAnalyzer::new();
+        let dependency_graph = analyzer
+            .build_dependency_graph()
+            .expect("Should build graph");
+        let layers =
+            SemanticAnalyzer::compute_execution_layers(&dependency_graph)
+                .expect("Should compute layers");
+
+        // Verify all analyzers are included
+        let total_analyzers: usize =
+            layers.iter().map(std::vec::Vec::len).sum();
+        assert_eq!(total_analyzers, analyzer.phase_analyzers.len());
+
+        // Symbol collector should be in the first layer (no dependencies)
+        let symbol_collector_index = analyzer
+            .phase_analyzers
+            .iter()
+            .position(|a| a.phase_name() == "symbol-collection")
+            .expect("Should find symbol collector");
+        assert!(
+            layers[0].contains(&symbol_collector_index),
+            "Symbol collector should be in first layer"
+        );
+
+        // Verify no duplicates across layers
+        let mut all_nodes = HashSet::new();
+        for layer in &layers {
+            for &node in layer {
+                assert!(
+                    all_nodes.insert(node),
+                    "Node should not appear in multiple layers"
+                );
+            }
+        }
     }
 }
