@@ -27,6 +27,7 @@
 //! let tokens = tokens.expect("scan ok");
 //! assert!(matches!(*tokens.last().unwrap().r#type(), TokenType::EOF));
 //! ```
+pub mod archive;
 pub mod lexer;
 pub mod tokens;
 

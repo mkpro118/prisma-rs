@@ -201,7 +201,7 @@ impl Display for TokenType {
 /// assert_eq!(loc.line, 2);
 /// assert_eq!(loc.column, 5);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolLocation {
     /// Line number of the position.
     pub line: u32,
@@ -223,7 +223,7 @@ pub struct SymbolLocation {
 /// };
 /// assert!(span.start.column < span.end.column);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolSpan {
     /// The start location of the span.
     pub start: SymbolLocation,
