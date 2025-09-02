@@ -1,0 +1,27 @@
+// Schema with various syntax errors for error recovery testing
+
+// Missing closing brace
+model User {
+  id String @id
+
+// Invalid field syntax  
+model Post {
+  id String @id
+  title // missing type
+  content String @invalid_attribute
+  
+// Unclosed enum
+enum Status {
+  ACTIVE
+  INACTIVE
+
+// Invalid datasource
+datasource {
+  provider = "postgresql"
+  // missing name
+}
+
+// Invalid generator
+generator client
+  provider = "prisma-client-js"
+  // missing braces
