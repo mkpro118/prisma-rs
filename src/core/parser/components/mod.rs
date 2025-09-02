@@ -84,3 +84,6 @@ pub mod helpers;
 pub mod members;
 pub mod primitives;
 pub mod types;
+
+#[cfg(test)]
+mod doc_integration_tests;
