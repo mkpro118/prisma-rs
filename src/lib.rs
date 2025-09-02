@@ -11,3 +11,6 @@
 #![forbid(future_incompatible)]
 
 pub mod core;
+
+// Re-export proc macros for AST derivation
+pub use compiler_macros::{AstContainerNode, AstLeafNode};
