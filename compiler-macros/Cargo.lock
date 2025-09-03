@@ -12,13 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prisma-rs"
-version = "0.1.0"
-dependencies = [
- "compiler-macros",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
