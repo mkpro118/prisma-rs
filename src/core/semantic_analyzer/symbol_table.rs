@@ -648,6 +648,30 @@ mod tests {
         }
     }
 
+    fn test_string_expr(value: &str) -> Expr {
+        Expr::StringLit(StringLit {
+            value: value.to_string(),
+            span: test_span(),
+        })
+    }
+
+    fn test_named_type(name: &str) -> TypeRef {
+        TypeRef::Named(NamedType {
+            name: QualifiedIdent {
+                parts: vec![test_ident(name)],
+                span: test_span(),
+            },
+            span: test_span(),
+        })
+    }
+
+    fn test_list_type(inner_type: TypeRef) -> TypeRef {
+        TypeRef::List(ListType {
+            inner: Box::new(inner_type),
+            span: test_span(),
+        })
+    }
+
     #[test]
     fn test_symbol_table_creation() {
         let table = SymbolTable::new();
@@ -719,5 +743,639 @@ mod tests {
             "Should add model successfully"
         );
         assert_eq!(table.total_symbol_count(), initial_count + 1);
+    }
+
+    #[test]
+    fn test_enum_symbol_addition() {
+        let mut table = SymbolTable::new();
+
+        let enum_decl = EnumDecl {
+            name: test_ident("Role"),
+            members: vec![
+                EnumMember::Value(EnumValue {
+                    name: test_ident("ADMIN"),
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                EnumMember::Value(EnumValue {
+                    name: test_ident("USER"),
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        assert!(table.add_enum(&enum_decl).is_ok());
+        assert!(table.contains("Role"));
+
+        let symbol = table.lookup_global("Role").unwrap();
+        assert!(matches!(symbol.symbol_type, SymbolType::Enum(_)));
+
+        // Test enum value lookups
+        let admin_value = table.lookup_enum_value("Role", "ADMIN");
+        assert!(admin_value.is_some());
+
+        let user_value = table.lookup_enum_value("Role", "USER");
+        assert!(user_value.is_some());
+
+        let nonexistent = table.lookup_enum_value("Role", "GUEST");
+        assert!(nonexistent.is_none());
+    }
+
+    #[test]
+    fn test_duplicate_enum_values() {
+        let mut table = SymbolTable::new();
+
+        let enum_decl = EnumDecl {
+            name: test_ident("Status"),
+            members: vec![
+                EnumMember::Value(EnumValue {
+                    name: test_ident("ACTIVE"),
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                EnumMember::Value(EnumValue {
+                    name: test_ident("ACTIVE"), // Duplicate
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        let result = table.add_enum(&enum_decl);
+        assert!(result.is_err());
+
+        if let Err(SymbolError::DuplicateSymbol { name, scope, .. }) = result {
+            assert_eq!(name, "ACTIVE");
+            assert_eq!(scope, "Status");
+        } else {
+            panic!("Expected DuplicateSymbol error");
+        }
+    }
+
+    #[test]
+    fn test_datasource_symbol_addition() {
+        let mut table = SymbolTable::new();
+
+        let datasource = DatasourceDecl {
+            name: test_ident("db"),
+            assignments: vec![
+                Assignment {
+                    key: test_ident("provider"),
+                    value: test_string_expr("postgresql"),
+                    docs: None,
+                    span: test_span(),
+                },
+                Assignment {
+                    key: test_ident("url"),
+                    value: test_string_expr("postgres://..."),
+                    docs: None,
+                    span: test_span(),
+                },
+            ],
+            docs: None,
+            span: test_span(),
+        };
+
+        assert!(table.add_datasource(&datasource).is_ok());
+        assert!(table.contains("db"));
+
+        let symbol = table.lookup_global("db").unwrap();
+        if let SymbolType::Datasource(ds) = &symbol.symbol_type {
+            assert_eq!(ds.assignment_count, 2);
+        } else {
+            panic!("Expected Datasource symbol");
+        }
+    }
+
+    #[test]
+    fn test_generator_symbol_addition() {
+        let mut table = SymbolTable::new();
+
+        let generator = GeneratorDecl {
+            name: test_ident("client"),
+            assignments: vec![Assignment {
+                key: test_ident("provider"),
+                value: test_string_expr("prisma-client-js"),
+                docs: None,
+                span: test_span(),
+            }],
+            docs: None,
+            span: test_span(),
+        };
+
+        assert!(table.add_generator(&generator).is_ok());
+        assert!(table.contains("client"));
+
+        let symbol = table.lookup_global("client").unwrap();
+        if let SymbolType::Generator(generator_symbol) = &symbol.symbol_type {
+            assert_eq!(generator_symbol.assignment_count, 1);
+        } else {
+            panic!("Expected Generator symbol");
+        }
+    }
+
+    #[test]
+    fn test_model_with_fields() {
+        let mut table = SymbolTable::new();
+
+        let model = ModelDecl {
+            name: test_ident("User"),
+            members: vec![
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("id"),
+                    r#type: test_named_type("Int"),
+                    optional: false,
+                    modifiers: vec![],
+                    attrs: vec![FieldAttribute {
+                        name: QualifiedIdent {
+                            parts: vec![test_ident("id")],
+                            span: test_span(),
+                        },
+                        args: None,
+                        docs: None,
+                        span: test_span(),
+                    }],
+                    docs: None,
+                    span: test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("name"),
+                    r#type: test_named_type("String"),
+                    optional: true,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("tags"),
+                    r#type: test_list_type(test_named_type("String")),
+                    optional: false,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        assert!(table.add_model(&model).is_ok());
+
+        // Test field lookup
+        let id_field = table.lookup_field("User", "id");
+        assert!(id_field.is_some());
+
+        let name_field = table.lookup_field("User", "name");
+        assert!(name_field.is_some());
+
+        let nonexistent_field = table.lookup_field("User", "email");
+        assert!(nonexistent_field.is_none());
+
+        // Test field properties
+        if let Some(field) = id_field
+            && let SymbolType::Field(field_symbol) = &field.symbol_type
+        {
+            assert_eq!(field_symbol.parent_model, "User");
+            assert!(!field_symbol.is_optional);
+            assert!(!field_symbol.is_list);
+            assert_eq!(field_symbol.attribute_count, 1);
+        }
+
+        if let Some(field) = name_field
+            && let SymbolType::Field(field_symbol) = &field.symbol_type
+        {
+            assert!(field_symbol.is_optional);
+            assert!(!field_symbol.is_list);
+        }
+
+        let tags_field = table.lookup_field("User", "tags").unwrap();
+        if let SymbolType::Field(field_symbol) = &tags_field.symbol_type {
+            assert!(field_symbol.is_list);
+            assert!(!field_symbol.is_optional);
+        }
+
+        // Test model fields iterator
+        let fields: Vec<_> = table.model_fields("User").unwrap().collect();
+        assert_eq!(fields.len(), 3);
+
+        // Test nonexistent model
+        assert!(table.model_fields("NonExistentModel").is_none());
+    }
+
+    #[test]
+    fn test_duplicate_fields_in_model() {
+        let mut table = SymbolTable::new();
+
+        let model = ModelDecl {
+            name: test_ident("User"),
+            members: vec![
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("id"),
+                    r#type: test_named_type("Int"),
+                    optional: false,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("id"), // Duplicate field name
+                    r#type: test_named_type("String"),
+                    optional: false,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        let result = table.add_model(&model);
+        assert!(result.is_err());
+
+        if let Err(SymbolError::DuplicateSymbol { name, scope, .. }) = result {
+            assert_eq!(name, "id");
+            assert_eq!(scope, "User");
+        } else {
+            panic!("Expected DuplicateSymbol error");
+        }
+    }
+
+    #[test]
+    fn test_iterators() {
+        let mut table = SymbolTable::new();
+
+        // Add models
+        let user_model = ModelDecl {
+            name: test_ident("User"),
+            members: vec![],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        let post_model = ModelDecl {
+            name: test_ident("Post"),
+            members: vec![],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        table.add_model(&user_model).unwrap();
+        table.add_model(&post_model).unwrap();
+
+        // Add enums
+        let role_enum = EnumDecl {
+            name: test_ident("Role"),
+            members: vec![EnumMember::Value(EnumValue {
+                name: test_ident("ADMIN"),
+                attrs: vec![],
+                docs: None,
+                span: test_span(),
+            })],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        table.add_enum(&role_enum).unwrap();
+
+        // Test model iterator
+        let models: Vec<_> = table.models().collect();
+        assert_eq!(models.len(), 2);
+        let model_names: Vec<_> =
+            models.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(model_names.contains(&"User"));
+        assert!(model_names.contains(&"Post"));
+
+        // Test enum iterator
+        let enums: Vec<_> = table.enums().collect();
+        assert_eq!(enums.len(), 1);
+        assert_eq!(enums[0].0, "Role");
+
+        // Test enum values iterator
+        let role_values: Vec<_> = table.enum_values("Role").unwrap().collect();
+        assert_eq!(role_values.len(), 1);
+        assert_eq!(role_values[0].0, "ADMIN");
+    }
+
+    #[test]
+    fn test_symbol_creation_methods() {
+        // Test builtin type symbol
+        let string_symbol = Symbol::new_builtin_type("String");
+        assert_eq!(string_symbol.name, "String");
+        assert!(matches!(
+            string_symbol.symbol_type,
+            SymbolType::BuiltinType(_)
+        ));
+        assert_eq!(string_symbol.visibility, Visibility::Public);
+        assert!(string_symbol.metadata.is_builtin);
+
+        // Test builtin function symbol
+        let now_symbol = Symbol::new_builtin_function("now");
+        assert_eq!(now_symbol.name, "now");
+        assert!(matches!(
+            now_symbol.symbol_type,
+            SymbolType::BuiltinFunction(_)
+        ));
+        assert!(now_symbol.metadata.is_builtin);
+
+        // Test enum value symbol
+        let enum_value = EnumValue {
+            name: test_ident("ADMIN"),
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+        let value_symbol = Symbol::new_enum_value(&enum_value, "Role");
+        assert_eq!(value_symbol.name, "ADMIN");
+        if let SymbolType::EnumValue(ev) = &value_symbol.symbol_type {
+            assert_eq!(ev.parent_enum, "Role");
+            assert_eq!(ev.attribute_count, 0);
+        }
+    }
+
+    #[test]
+    fn test_model_primary_key_detection() {
+        let mut table = SymbolTable::new();
+
+        // Model with primary key
+        let model_with_pk = ModelDecl {
+            name: test_ident("User"),
+            members: vec![ModelMember::Field(FieldDecl {
+                name: test_ident("id"),
+                r#type: test_named_type("Int"),
+                optional: false,
+                modifiers: vec![],
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![test_ident("id")],
+                        span: test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: test_span(),
+                }],
+                docs: None,
+                span: test_span(),
+            })],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        table.add_model(&model_with_pk).unwrap();
+        let symbol = table.lookup_global("User").unwrap();
+        if let SymbolType::Model(model_symbol) = &symbol.symbol_type {
+            assert!(model_symbol.has_primary_key);
+            assert_eq!(model_symbol.field_count, 1);
+        }
+    }
+
+    #[test]
+    fn test_builtin_symbols() {
+        let table = SymbolTable::new();
+
+        // Test scalar types
+        let scalar_types = [
+            "String", "Int", "Float", "Boolean", "DateTime", "Json", "Bytes",
+            "Decimal", "BigInt", "Uuid",
+        ];
+        for scalar_type in &scalar_types {
+            assert!(
+                table.contains(scalar_type),
+                "Should contain {scalar_type}"
+            );
+            let symbol = table.lookup_global(scalar_type).unwrap();
+            assert!(matches!(symbol.symbol_type, SymbolType::BuiltinType(_)));
+        }
+
+        // Test built-in functions
+        let functions = ["now", "autoincrement", "cuid", "uuid"];
+        for function in &functions {
+            assert!(table.contains(function), "Should contain {function}");
+            let symbol = table.lookup_global(function).unwrap();
+            assert!(matches!(
+                symbol.symbol_type,
+                SymbolType::BuiltinFunction(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_symbol_metadata() {
+        // Test default metadata
+        let default_meta = SymbolMetadata::new();
+        assert!(!default_meta.is_builtin);
+        assert!(default_meta.documentation.is_none());
+        assert!(default_meta.tags.is_empty());
+
+        let default_via_trait = SymbolMetadata::default();
+        assert!(!default_via_trait.is_builtin);
+
+        // Test builtin metadata
+        let builtin_meta = SymbolMetadata::builtin();
+        assert!(builtin_meta.is_builtin);
+        assert!(builtin_meta.documentation.is_none());
+        assert!(builtin_meta.tags.is_empty());
+    }
+
+    #[test]
+    fn test_symbol_error_display() {
+        let duplicate_error = SymbolError::DuplicateSymbol {
+            name: "User".to_string(),
+            scope: "global".to_string(),
+            existing_span: test_span(),
+            new_span: test_span(),
+        };
+
+        let display_str = format!("{duplicate_error}");
+        assert!(
+            display_str.contains("Duplicate symbol 'User' in scope 'global'")
+        );
+
+        let not_found_error = SymbolError::SymbolNotFound {
+            name: "NonExistent".to_string(),
+            scope: "global".to_string(),
+        };
+
+        let display_str = format!("{not_found_error}");
+        assert!(
+            display_str
+                .contains("Symbol 'NonExistent' not found in scope 'global'")
+        );
+
+        let invalid_op_error = SymbolError::InvalidOperation {
+            message: "Cannot perform this operation".to_string(),
+        };
+
+        let display_str = format!("{invalid_op_error}");
+        assert!(display_str.contains(
+            "Invalid symbol operation: Cannot perform this operation"
+        ));
+    }
+
+    #[test]
+    fn test_symbol_error_trait() {
+        let error = SymbolError::DuplicateSymbol {
+            name: "Test".to_string(),
+            scope: "global".to_string(),
+            existing_span: test_span(),
+            new_span: test_span(),
+        };
+
+        // Test that it implements std::error::Error
+        let _error_trait: &dyn std::error::Error = &error;
+    }
+
+    #[test]
+    fn test_enum_categories() {
+        // Test TypeCategory
+        assert_eq!(TypeCategory::Scalar, TypeCategory::Scalar);
+        assert_ne!(TypeCategory::Scalar, TypeCategory::Composite);
+
+        // Test Debug
+        assert_eq!(format!("{:?}", TypeCategory::Scalar), "Scalar");
+        assert_eq!(format!("{:?}", TypeCategory::Composite), "Composite");
+
+        // Test FunctionCategory
+        assert_eq!(FunctionCategory::Generator, FunctionCategory::Generator);
+        assert_ne!(FunctionCategory::Generator, FunctionCategory::Transformer);
+
+        assert_eq!(format!("{:?}", FunctionCategory::Generator), "Generator");
+        assert_eq!(
+            format!("{:?}", FunctionCategory::Transformer),
+            "Transformer"
+        );
+
+        // Test Visibility
+        assert_eq!(Visibility::Public, Visibility::Public);
+        assert_ne!(Visibility::Public, Visibility::Private);
+
+        assert_eq!(format!("{:?}", Visibility::Public), "Public");
+        assert_eq!(format!("{:?}", Visibility::Private), "Private");
+    }
+
+    #[test]
+    fn test_symbol_type_variants() {
+        let builtin_type = SymbolType::BuiltinType(BuiltinTypeSymbol {
+            type_category: TypeCategory::Scalar,
+        });
+
+        let builtin_function =
+            SymbolType::BuiltinFunction(BuiltinFunctionSymbol {
+                function_category: FunctionCategory::Generator,
+            });
+
+        let type_alias = SymbolType::TypeAlias(TypeAliasSymbol {
+            target_type: "String".to_string(),
+        });
+
+        // Test pattern matching works
+        match builtin_type {
+            SymbolType::BuiltinType(_) => (),
+            _ => panic!("Expected BuiltinType"),
+        }
+
+        match builtin_function {
+            SymbolType::BuiltinFunction(_) => (),
+            _ => panic!("Expected BuiltinFunction"),
+        }
+
+        match type_alias {
+            SymbolType::TypeAlias(_) => (),
+            _ => panic!("Expected TypeAlias"),
+        }
+    }
+
+    #[test]
+    fn test_symbol_table_default() {
+        let table1 = SymbolTable::new();
+        let table2 = SymbolTable::default();
+
+        // Both should have the same built-in symbols
+        assert_eq!(table1.contains("String"), table2.contains("String"));
+        assert_eq!(table1.contains("now"), table2.contains("now"));
+    }
+
+    #[test]
+    fn test_complex_symbol_counting() {
+        let mut table = SymbolTable::new();
+        let initial_count = table.total_symbol_count();
+
+        // Add a model with fields
+        let model = ModelDecl {
+            name: test_ident("User"),
+            members: vec![
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("id"),
+                    r#type: test_named_type("Int"),
+                    optional: false,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    name: test_ident("name"),
+                    r#type: test_named_type("String"),
+                    optional: true,
+                    modifiers: vec![],
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        table.add_model(&model).unwrap();
+
+        // Add an enum with values
+        let enum_decl = EnumDecl {
+            name: test_ident("Role"),
+            members: vec![
+                EnumMember::Value(EnumValue {
+                    name: test_ident("ADMIN"),
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+                EnumMember::Value(EnumValue {
+                    name: test_ident("USER"),
+                    attrs: vec![],
+                    docs: None,
+                    span: test_span(),
+                }),
+            ],
+            attrs: vec![],
+            docs: None,
+            span: test_span(),
+        };
+
+        table.add_enum(&enum_decl).unwrap();
+
+        // Total count should be: initial + 1 model + 2 fields + 1 enum + 2 enum values = initial + 6
+        assert_eq!(table.total_symbol_count(), initial_count + 6);
     }
 }

@@ -299,4 +299,442 @@ mod tests {
         assert_eq!(AttributeElementType::Model, AttributeElementType::Model);
         assert_ne!(AttributeElementType::Model, AttributeElementType::Field);
     }
+
+    #[test]
+    fn test_all_attribute_element_types() {
+        let types = [
+            AttributeElementType::Model,
+            AttributeElementType::Field,
+            AttributeElementType::Enum,
+            AttributeElementType::EnumValue,
+            AttributeElementType::Datasource,
+            AttributeElementType::Generator,
+        ];
+
+        // Test all variants are unique
+        for (i, type1) in types.iter().enumerate() {
+            for (j, type2) in types.iter().enumerate() {
+                if i == j {
+                    assert_eq!(type1, type2);
+                } else {
+                    assert_ne!(type1, type2);
+                }
+            }
+        }
+
+        // Test Debug implementation
+        assert_eq!(format!("{:?}", AttributeElementType::Model), "Model");
+        assert_eq!(format!("{:?}", AttributeElementType::Field), "Field");
+        assert_eq!(format!("{:?}", AttributeElementType::Enum), "Enum");
+        assert_eq!(
+            format!("{:?}", AttributeElementType::EnumValue),
+            "EnumValue"
+        );
+        assert_eq!(
+            format!("{:?}", AttributeElementType::Datasource),
+            "Datasource"
+        );
+        assert_eq!(
+            format!("{:?}", AttributeElementType::Generator),
+            "Generator"
+        );
+
+        // Test Copy trait
+        let original = AttributeElementType::Model;
+        let copied = original;
+        assert_eq!(original, copied);
+    }
+
+    #[test]
+    fn test_attribute_context_creation() {
+        use crate::core::semantic_analyzer::{
+            AnalyzerOptions, DatabaseProvider, FeatureOptions, ValidationMode,
+        };
+        use std::time::Duration;
+
+        let options = AnalyzerOptions {
+            validation_mode: ValidationMode::Lenient,
+            features: FeatureOptions {
+                validate_experimental: true,
+                performance_warnings: true,
+                enable_parallelism: true,
+            },
+            phase_timeout: Duration::from_secs(30),
+            target_provider: Some(DatabaseProvider::PostgreSQL),
+            max_diagnostics: 100,
+        };
+
+        let analysis_context = AnalysisContext::new(&options);
+
+        let attr_context = AttributeContext {
+            element_type: AttributeElementType::Field,
+            element_name: "user_id",
+            analysis_context: &analysis_context,
+        };
+
+        assert_eq!(attr_context.element_type, AttributeElementType::Field);
+        assert_eq!(attr_context.element_name, "user_id");
+
+        // Test cloning
+        let cloned_context = attr_context.clone();
+        assert_eq!(cloned_context.element_type, attr_context.element_type);
+        assert_eq!(cloned_context.element_name, attr_context.element_name);
+
+        // Test Debug
+        let debug_str = format!("{attr_context:?}");
+        assert!(debug_str.contains("Field"));
+        assert!(debug_str.contains("user_id"));
+    }
+
+    // Mock implementations for testing other traits
+    struct MockDeclarationAnalyzer {
+        name: &'static str,
+    }
+
+    impl MockDeclarationAnalyzer {
+        fn new(name: &'static str) -> Self {
+            Self { name }
+        }
+    }
+
+    impl DeclarationAnalyzer<String> for MockDeclarationAnalyzer {
+        fn analyze_declaration(
+            &mut self,
+            _decl: &String,
+            _context: &mut AnalysisContext,
+        ) -> Vec<SemanticDiagnostic> {
+            Vec::new()
+        }
+
+        fn analyzer_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    struct MockRelationshipAnalyzer {
+        name: &'static str,
+    }
+
+    impl MockRelationshipAnalyzer {
+        fn new(name: &'static str) -> Self {
+            Self { name }
+        }
+    }
+
+    impl RelationshipAnalyzer for MockRelationshipAnalyzer {
+        fn analyze_relationships(
+            &mut self,
+            _schema: &Schema,
+            _context: &mut AnalysisContext,
+        ) -> Vec<SemanticDiagnostic> {
+            Vec::new()
+        }
+
+        fn analyzer_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    struct MockAttributeAnalyzer {
+        name: &'static str,
+        supported_attrs: Vec<&'static str>,
+    }
+
+    impl MockAttributeAnalyzer {
+        fn new(name: &'static str, supported: Vec<&'static str>) -> Self {
+            Self {
+                name,
+                supported_attrs: supported,
+            }
+        }
+    }
+
+    impl AttributeAnalyzer for MockAttributeAnalyzer {
+        fn analyze_attribute(
+            &mut self,
+            _attr: &FieldAttribute,
+            _context: &AttributeContext,
+        ) -> Vec<SemanticDiagnostic> {
+            Vec::new()
+        }
+
+        fn supported_attributes(&self) -> &[&'static str] {
+            &self.supported_attrs
+        }
+
+        fn analyzer_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    struct MockCustomRule {
+        name: &'static str,
+        rule_priority: i32,
+    }
+
+    impl MockCustomRule {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                rule_priority: 0,
+            }
+        }
+
+        fn with_priority(mut self, priority: i32) -> Self {
+            self.rule_priority = priority;
+            self
+        }
+    }
+
+    impl CustomRule for MockCustomRule {
+        fn apply_rule(
+            &self,
+            _schema: &Schema,
+            _context: &AnalysisContext,
+        ) -> Vec<SemanticDiagnostic> {
+            Vec::new()
+        }
+
+        fn rule_name(&self) -> &'static str {
+            self.name
+        }
+
+        fn priority(&self) -> i32 {
+            self.rule_priority
+        }
+    }
+
+    struct MockCompositeAnalyzer {
+        name: &'static str,
+        children: Vec<Box<dyn CompositeAnalyzer>>,
+    }
+
+    impl MockCompositeAnalyzer {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                children: Vec::new(),
+            }
+        }
+
+        fn with_child(mut self, child: Box<dyn CompositeAnalyzer>) -> Self {
+            self.children.push(child);
+            self
+        }
+    }
+
+    impl CompositeAnalyzer for MockCompositeAnalyzer {
+        fn component_name(&self) -> &'static str {
+            self.name
+        }
+
+        fn child_components(&self) -> Vec<&dyn CompositeAnalyzer> {
+            self.children
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn test_declaration_analyzer() {
+        let mut analyzer =
+            MockDeclarationAnalyzer::new("TestDeclarationAnalyzer");
+        assert_eq!(analyzer.analyzer_name(), "TestDeclarationAnalyzer");
+
+        // Create a mock context for testing
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let test_declaration = String::from("test_model");
+        let diagnostics =
+            analyzer.analyze_declaration(&test_declaration, &mut context);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_relationship_analyzer() {
+        use crate::core::parser::ast::{Declaration, Schema};
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        let mut analyzer =
+            MockRelationshipAnalyzer::new("TestRelationshipAnalyzer");
+        assert_eq!(analyzer.analyzer_name(), "TestRelationshipAnalyzer");
+
+        let schema = Schema {
+            declarations: Vec::<Declaration>::new(),
+            span: SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 1 },
+            },
+        };
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let diagnostics = analyzer.analyze_relationships(&schema, &mut context);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_attribute_analyzer() {
+        use crate::core::parser::ast::{FieldAttribute, Ident, QualifiedIdent};
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        let mut analyzer = MockAttributeAnalyzer::new(
+            "TestAttributeAnalyzer",
+            vec!["id", "default", "unique"],
+        );
+
+        assert_eq!(analyzer.analyzer_name(), "TestAttributeAnalyzer");
+        assert_eq!(
+            analyzer.supported_attributes(),
+            &["id", "default", "unique"]
+        );
+
+        // Create mock attribute and context
+        let span = SymbolSpan {
+            start: SymbolLocation { line: 1, column: 1 },
+            end: SymbolLocation { line: 1, column: 5 },
+        };
+
+        let attr = FieldAttribute {
+            name: QualifiedIdent {
+                parts: vec![Ident {
+                    text: "id".to_string(),
+                    span: span.clone(),
+                }],
+                span: span.clone(),
+            },
+            args: None,
+            docs: None,
+            span: span.clone(),
+        };
+
+        let options = AnalyzerOptions::default();
+        let analysis_context = AnalysisContext::new(&options);
+        let attr_context = AttributeContext {
+            element_type: AttributeElementType::Field,
+            element_name: "user_id",
+            analysis_context: &analysis_context,
+        };
+
+        let diagnostics = analyzer.analyze_attribute(&attr, &attr_context);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_custom_rule() {
+        use crate::core::parser::ast::{Declaration, Schema};
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        let rule = MockCustomRule::new("TestCustomRule");
+        assert_eq!(rule.rule_name(), "TestCustomRule");
+        assert_eq!(rule.priority(), 0); // Default priority
+
+        let high_priority_rule =
+            MockCustomRule::new("HighPriorityRule").with_priority(100);
+        assert_eq!(high_priority_rule.rule_name(), "HighPriorityRule");
+        assert_eq!(high_priority_rule.priority(), 100);
+
+        let schema = Schema {
+            declarations: Vec::<Declaration>::new(),
+            span: SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 1 },
+            },
+        };
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new(&options);
+
+        let diagnostics = rule.apply_rule(&schema, &context);
+        assert!(diagnostics.is_empty());
+
+        let high_priority_diagnostics =
+            high_priority_rule.apply_rule(&schema, &context);
+        assert!(high_priority_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_composite_analyzer_simple() {
+        let analyzer = MockCompositeAnalyzer::new("SimpleAnalyzer");
+        assert_eq!(analyzer.component_name(), "SimpleAnalyzer");
+        assert!(analyzer.child_components().is_empty());
+        assert_eq!(analyzer.structure_description(), "SimpleAnalyzer");
+    }
+
+    #[test]
+    fn test_composite_analyzer_with_children() {
+        let child1 = Box::new(MockCompositeAnalyzer::new("Child1"));
+        let child2 = Box::new(MockCompositeAnalyzer::new("Child2"));
+
+        let parent = MockCompositeAnalyzer::new("Parent")
+            .with_child(child1)
+            .with_child(child2);
+
+        assert_eq!(parent.component_name(), "Parent");
+        assert_eq!(parent.child_components().len(), 2);
+        assert_eq!(parent.child_components()[0].component_name(), "Child1");
+        assert_eq!(parent.child_components()[1].component_name(), "Child2");
+
+        let structure = parent.structure_description();
+        assert_eq!(structure, "Parent { Child1, Child2 }");
+    }
+
+    #[test]
+    fn test_composite_analyzer_nested() {
+        let grandchild = Box::new(MockCompositeAnalyzer::new("GrandChild"));
+        let child = Box::new(
+            MockCompositeAnalyzer::new("Child").with_child(grandchild),
+        );
+        let parent = MockCompositeAnalyzer::new("Parent").with_child(child);
+
+        let structure = parent.structure_description();
+        assert_eq!(structure, "Parent { Child { GrandChild } }");
+    }
+
+    #[test]
+    fn test_phase_analyzer_parallel_and_priority() {
+        struct ParallelAnalyzer {
+            name: &'static str,
+            priority: i32,
+        }
+
+        impl ParallelAnalyzer {
+            fn new(name: &'static str, priority: i32) -> Self {
+                Self { name, priority }
+            }
+        }
+
+        impl PhaseAnalyzer for ParallelAnalyzer {
+            fn phase_name(&self) -> &'static str {
+                self.name
+            }
+
+            fn analyze(
+                &mut self,
+                _schema: &Schema,
+                _context: &mut AnalysisContext,
+            ) -> PhaseResult {
+                PhaseResult::new(Vec::new())
+            }
+
+            fn supports_parallel_execution(&self) -> bool {
+                true
+            }
+
+            fn priority(&self) -> i32 {
+                self.priority
+            }
+        }
+
+        let analyzer = ParallelAnalyzer::new("ParallelPhase", 50);
+        assert_eq!(analyzer.phase_name(), "ParallelPhase");
+        assert!(analyzer.supports_parallel_execution());
+        assert_eq!(analyzer.priority(), 50);
+        assert_eq!(analyzer.dependencies().len(), 0);
+    }
 }

@@ -293,7 +293,7 @@ impl AnalysisMetadata {
 }
 
 /// Values that can be stored in analysis metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisMetadataValue {
     String(String),
     Integer(i64),
@@ -516,11 +516,29 @@ impl std::fmt::Display for AnalysisSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::semantic_analyzer::AnalyzerOptions;
+    use crate::core::scanner::{SymbolLocation, tokens::SymbolSpan};
+    use crate::core::semantic_analyzer::{
+        AnalyzerOptions, DatabaseProvider, DiagnosticCode, FeatureOptions,
+        ValidationMode,
+    };
+
+    fn create_test_options() -> AnalyzerOptions {
+        AnalyzerOptions {
+            validation_mode: ValidationMode::Lenient,
+            features: FeatureOptions {
+                validate_experimental: false,
+                performance_warnings: false,
+                enable_parallelism: false,
+            },
+            phase_timeout: Duration::from_secs(30),
+            target_provider: Some(DatabaseProvider::PostgreSQL),
+            max_diagnostics: 100,
+        }
+    }
 
     #[test]
     fn test_analysis_context_creation() {
-        let options = AnalyzerOptions::default();
+        let options = create_test_options();
         let context = AnalysisContext::new(&options);
 
         assert!(context.current_model().is_none());
@@ -587,5 +605,711 @@ mod tests {
             result_with_duration.duration,
             Some(Duration::from_millis(50))
         );
+    }
+
+    #[test]
+    fn test_model_field_enum_context() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        // Test model context
+        assert!(context.current_model().is_none());
+        context.set_current_model(Some("User".to_string()));
+        assert_eq!(context.current_model(), Some("User"));
+
+        // Test field context
+        assert!(context.current_field().is_none());
+        context.set_current_field(Some("email".to_string()));
+        assert_eq!(context.current_field(), Some("email"));
+
+        // Test enum context
+        assert!(context.current_enum().is_none());
+        context.set_current_enum(Some("Status".to_string()));
+        assert_eq!(context.current_enum(), Some("Status"));
+
+        // Clear contexts
+        context.set_current_model(None);
+        context.set_current_field(None);
+        context.set_current_enum(None);
+
+        assert!(context.current_model().is_none());
+        assert!(context.current_field().is_none());
+        assert!(context.current_enum().is_none());
+    }
+
+    #[test]
+    fn test_type_resolution_stack() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        // Initially empty
+        assert!(context.type_resolution_stack().is_empty());
+        assert!(!context.is_resolving_type("User"));
+
+        // Push types
+        context.push_type_resolution("User".to_string());
+        assert_eq!(context.type_resolution_stack().len(), 1);
+        assert!(context.is_resolving_type("User"));
+        assert!(!context.is_resolving_type("Post"));
+
+        context.push_type_resolution("Post".to_string());
+        assert_eq!(context.type_resolution_stack().len(), 2);
+        assert!(context.is_resolving_type("User"));
+        assert!(context.is_resolving_type("Post"));
+
+        // Pop types
+        let popped = context.pop_type_resolution();
+        assert_eq!(popped, Some("Post".to_string()));
+        assert!(context.is_resolving_type("User"));
+        assert!(!context.is_resolving_type("Post"));
+
+        let popped = context.pop_type_resolution();
+        assert_eq!(popped, Some("User".to_string()));
+        assert!(context.type_resolution_stack().is_empty());
+
+        // Pop from empty stack
+        let popped = context.pop_type_resolution();
+        assert_eq!(popped, None);
+    }
+
+    #[test]
+    fn test_metadata_recording() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        // Record various metadata
+        context.record_metadata(
+            "models_processed".to_string(),
+            AnalysisMetadataValue::Integer(5),
+        );
+        context.record_metadata(
+            "fields_processed".to_string(),
+            AnalysisMetadataValue::Integer(20),
+        );
+        context.record_metadata(
+            "relationships_found".to_string(),
+            AnalysisMetadataValue::Integer(3),
+        );
+
+        // Check elapsed time is reasonable
+        let _elapsed = context.elapsed_time();
+        // Duration is always >= 0, so just verify it can be retrieved
+
+        // Test timeout (should not timeout with default settings)
+        assert!(!context.has_timed_out());
+    }
+
+    #[test]
+    fn test_metadata_extraction() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        context.record_metadata(
+            "test_metric".to_string(),
+            AnalysisMetadataValue::Integer(42),
+        );
+
+        let metadata = context.take_metadata();
+        assert_eq!(
+            metadata.entries.get("test_metric"),
+            Some(&AnalysisMetadataValue::Integer(42))
+        );
+        // Metadata doesn't track elapsed_time directly
+        // Context should still be usable but metadata is moved
+    }
+
+    #[test]
+    fn test_analyzer_options_defaults() {
+        let options = create_test_options();
+        assert_eq!(options.validation_mode, ValidationMode::Lenient);
+        assert!(!options.features.enable_parallelism);
+        assert_eq!(options.phase_timeout, Duration::from_secs(30));
+        assert_eq!(options.max_diagnostics, 100);
+    }
+
+    #[test]
+    fn test_analyzer_options_custom() {
+        let options = AnalyzerOptions {
+            validation_mode: ValidationMode::Lenient,
+            features: FeatureOptions {
+                validate_experimental: false,
+                performance_warnings: false,
+                enable_parallelism: false,
+            },
+            phase_timeout: Duration::from_secs(60),
+            target_provider: Some(DatabaseProvider::SQLite),
+            max_diagnostics: 50,
+        };
+
+        assert_eq!(options.validation_mode, ValidationMode::Lenient);
+        assert!(!options.features.enable_parallelism);
+        assert_eq!(options.phase_timeout, Duration::from_secs(60));
+        assert_eq!(options.max_diagnostics, 50);
+
+        let context = AnalysisContext::new(&options);
+        assert_eq!(context.options().validation_mode, ValidationMode::Lenient);
+        assert_eq!(context.options().max_diagnostics, 50);
+    }
+
+    #[test]
+    fn test_scope_type_variants() {
+        // Test that all ScopeType variants exist and work
+        let _model_scope = ScopeType::Model;
+        let _enum_scope = ScopeType::Enum;
+        let _datasource_scope = ScopeType::Datasource;
+        let _generator_scope = ScopeType::Generator;
+
+        // Test Debug trait
+        let model_debug = format!("{:?}", ScopeType::Model);
+        assert!(model_debug.contains("Model"));
+    }
+
+    #[test]
+    fn test_scope_creation_and_properties() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        // Enter multiple scopes
+        context.enter_scope(ScopeType::Model, "User".to_string());
+        let current = context.current_scope().unwrap();
+        assert_eq!(current.scope_type, ScopeType::Model);
+        assert_eq!(current.name, "User");
+
+        context.enter_scope(ScopeType::Enum, "Status".to_string());
+        let current = context.current_scope().unwrap();
+        assert_eq!(current.scope_type, ScopeType::Enum);
+        assert_eq!(current.name, "Status");
+
+        // Exit scopes
+        let exited = context.exit_scope().unwrap();
+        assert_eq!(exited.scope_type, ScopeType::Enum);
+        assert_eq!(exited.name, "Status");
+
+        let current = context.current_scope().unwrap();
+        assert_eq!(current.scope_type, ScopeType::Model);
+        assert_eq!(current.name, "User");
+
+        context.exit_scope();
+        assert!(context.current_scope().is_none());
+
+        // Exit from empty stack
+        let exited = context.exit_scope();
+        assert!(exited.is_none());
+    }
+
+    #[test]
+    fn test_timeout_behavior() {
+        let options = AnalyzerOptions {
+            validation_mode: ValidationMode::Lenient,
+            features: FeatureOptions {
+                validate_experimental: false,
+                performance_warnings: false,
+                enable_parallelism: false,
+            },
+            phase_timeout: Duration::from_nanos(1), // Very short timeout
+            target_provider: Some(DatabaseProvider::PostgreSQL),
+            max_diagnostics: 100,
+        };
+
+        let context = AnalysisContext::new(&options);
+
+        // Sleep briefly to exceed timeout
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Should now timeout (though timing is not guaranteed in tests)
+        // This is more of a smoke test for the timeout logic
+        let _has_timeout = context.has_timed_out();
+    }
+
+    #[test]
+    fn test_phase_result_merge() {
+        let mut result1 = PhaseResult::success();
+        let result2 = PhaseResult::new(vec![SemanticDiagnostic::error(
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 5 },
+            },
+            "Test error".to_string(),
+            DiagnosticCode::InvalidIdentifier,
+        )]);
+
+        // Test adding diagnostics to success
+        result1.diagnostics.push(SemanticDiagnostic::warning(
+            SymbolSpan {
+                start: SymbolLocation { line: 2, column: 1 },
+                end: SymbolLocation { line: 2, column: 5 },
+            },
+            "Test warning".to_string(),
+            DiagnosticCode::DeprecatedFeature,
+        ));
+
+        assert_eq!(result1.diagnostics.len(), 1);
+        assert!(result1.success);
+
+        assert_eq!(result2.diagnostics.len(), 1);
+        assert!(!result2.success);
+    }
+
+    #[test]
+    fn test_analysis_metadata_default() {
+        let metadata = AnalysisMetadata::default();
+        assert!(metadata.entries.is_empty());
+        // Metadata doesn't track elapsed_time directly
+    }
+
+    #[test]
+    fn test_complex_scenario() {
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        // Simulate complex analysis scenario
+        context.enter_scope(ScopeType::Model, "User".to_string());
+        context.set_current_model(Some("User".to_string()));
+
+        context.push_type_resolution("User".to_string());
+        context.set_current_field(Some("posts".to_string()));
+        context.push_type_resolution("Post".to_string());
+
+        context.record_metadata(
+            "fields_analyzed".to_string(),
+            AnalysisMetadataValue::Integer(1),
+        );
+
+        // Verify state
+        assert_eq!(context.current_model(), Some("User"));
+        assert_eq!(context.current_field(), Some("posts"));
+        assert!(context.is_resolving_type("User"));
+        assert!(context.is_resolving_type("Post"));
+        assert_eq!(context.type_resolution_stack().len(), 2);
+
+        // Clean up
+        context.pop_type_resolution();
+        context.pop_type_resolution();
+        context.set_current_field(None);
+        context.set_current_model(None);
+        context.exit_scope();
+
+        // Verify cleanup
+        assert!(context.current_model().is_none());
+        assert!(context.current_field().is_none());
+        assert!(!context.is_resolving_type("User"));
+        assert!(!context.is_resolving_type("Post"));
+        assert!(context.current_scope().is_none());
+    }
+
+    #[test]
+    fn test_analysis_metadata_comprehensive() {
+        let mut metadata = AnalysisMetadata::new();
+
+        // Test all AnalysisMetadataValue variants
+        metadata.add_entry(
+            "string_val".to_string(),
+            AnalysisMetadataValue::String("test".to_string()),
+        );
+        metadata.add_entry(
+            "int_val".to_string(),
+            AnalysisMetadataValue::Integer(42),
+        );
+        metadata.add_entry(
+            "float_val".to_string(),
+            AnalysisMetadataValue::Float(3.14),
+        );
+        metadata.add_entry(
+            "bool_val".to_string(),
+            AnalysisMetadataValue::Boolean(true),
+        );
+        metadata.add_entry(
+            "duration_val".to_string(),
+            AnalysisMetadataValue::Duration(Duration::from_millis(100)),
+        );
+        metadata.add_entry(
+            "stringlist_val".to_string(),
+            AnalysisMetadataValue::StringList(vec![
+                "a".to_string(),
+                "b".to_string(),
+            ]),
+        );
+
+        // Test statistics access and mutation
+        {
+            let stats_mut = metadata.statistics_mut();
+            stats_mut.models_analyzed = 5;
+            stats_mut.enums_analyzed = 3;
+            stats_mut.fields_analyzed = 20;
+            stats_mut.relationships_found = 8;
+            stats_mut.attributes_validated = 15;
+            stats_mut.type_resolutions = 25;
+            stats_mut.circular_dependencies_detected = 1;
+            stats_mut.warnings_generated = 10;
+            stats_mut.errors_generated = 2;
+        }
+
+        let stats = metadata.statistics();
+        assert_eq!(stats.models_analyzed, 5);
+        assert_eq!(stats.enums_analyzed, 3);
+        assert_eq!(stats.fields_analyzed, 20);
+        assert_eq!(stats.relationships_found, 8);
+        assert_eq!(stats.attributes_validated, 15);
+        assert_eq!(stats.type_resolutions, 25);
+        assert_eq!(stats.circular_dependencies_detected, 1);
+        assert_eq!(stats.warnings_generated, 10);
+        assert_eq!(stats.errors_generated, 2);
+
+        // Test phase timing
+        metadata.record_phase_timing(
+            "phase1".to_string(),
+            Duration::from_millis(50),
+        );
+        metadata.record_phase_timing(
+            "phase2".to_string(),
+            Duration::from_millis(75),
+        );
+
+        assert_eq!(
+            metadata.get_phase_timing("phase1"),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(
+            metadata.get_phase_timing("phase2"),
+            Some(Duration::from_millis(75))
+        );
+        assert_eq!(metadata.get_phase_timing("nonexistent"), None);
+
+        // Test total analysis time
+        assert_eq!(metadata.total_analysis_time(), Duration::from_millis(125));
+    }
+
+    #[test]
+    fn test_phase_result_comprehensive() {
+        // Test PhaseResult::error with a fatal error code
+        let error_result = PhaseResult::error(SemanticDiagnostic::error(
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 5 },
+            },
+            "Fatal error".to_string(),
+            DiagnosticCode::CircularDependency, // This is a fatal error
+        ));
+
+        assert!(!error_result.success);
+        assert_eq!(error_result.diagnostics.len(), 1);
+        assert_eq!(error_result.error_count(), 1);
+        assert_eq!(error_result.warning_count(), 0);
+        assert!(error_result.has_fatal_errors()); // CircularDependency is fatal
+
+        // Test PhaseResult::error with a non-fatal error code
+        let non_fatal_error_result =
+            PhaseResult::error(SemanticDiagnostic::error(
+                SymbolSpan {
+                    start: SymbolLocation { line: 1, column: 1 },
+                    end: SymbolLocation { line: 1, column: 5 },
+                },
+                "Non-fatal error".to_string(),
+                DiagnosticCode::InvalidIdentifier, // This is not a fatal error
+            ));
+
+        assert!(!non_fatal_error_result.success);
+        assert_eq!(non_fatal_error_result.error_count(), 1);
+        assert!(!non_fatal_error_result.has_fatal_errors()); // InvalidIdentifier is not fatal
+
+        // Test with metadata
+        let result_with_metadata = PhaseResult::success()
+            .with_metadata(
+                "test_key".to_string(),
+                AnalysisMetadataValue::String("test_value".to_string()),
+            )
+            .with_duration(Duration::from_millis(100));
+
+        assert!(result_with_metadata.success);
+        assert_eq!(
+            result_with_metadata.duration,
+            Some(Duration::from_millis(100))
+        );
+        assert!(result_with_metadata.metadata.contains_key("test_key"));
+
+        // Test mixed diagnostics
+        let mixed_result = PhaseResult::new(vec![
+            SemanticDiagnostic::warning(
+                SymbolSpan {
+                    start: SymbolLocation { line: 1, column: 1 },
+                    end: SymbolLocation { line: 1, column: 5 },
+                },
+                "Warning".to_string(),
+                DiagnosticCode::DeprecatedFeature,
+            ),
+            SemanticDiagnostic::info(
+                SymbolSpan {
+                    start: SymbolLocation { line: 2, column: 1 },
+                    end: SymbolLocation { line: 2, column: 5 },
+                },
+                "Info".to_string(),
+                DiagnosticCode::PerformanceWarning,
+            ),
+        ]);
+
+        assert!(mixed_result.success); // No errors
+        assert_eq!(mixed_result.error_count(), 0);
+        assert_eq!(mixed_result.warning_count(), 1);
+        assert!(!mixed_result.has_fatal_errors());
+    }
+
+    #[test]
+    fn test_analysis_result_comprehensive() {
+        let symbol_table = SymbolTable::new();
+        let type_resolver = TypeResolver::new();
+        let mut metadata = AnalysisMetadata::new();
+
+        // Set up statistics
+        metadata.statistics_mut().models_analyzed = 3;
+        metadata.statistics_mut().enums_analyzed = 2;
+        metadata.record_phase_timing(
+            "phase1".to_string(),
+            Duration::from_millis(50),
+        );
+
+        let diagnostics = vec![
+            SemanticDiagnostic::error(
+                SymbolSpan {
+                    start: SymbolLocation { line: 1, column: 1 },
+                    end: SymbolLocation { line: 1, column: 5 },
+                },
+                "Error".to_string(),
+                DiagnosticCode::InvalidIdentifier,
+            ),
+            SemanticDiagnostic::warning(
+                SymbolSpan {
+                    start: SymbolLocation { line: 2, column: 1 },
+                    end: SymbolLocation { line: 2, column: 5 },
+                },
+                "Warning".to_string(),
+                DiagnosticCode::DeprecatedFeature,
+            ),
+            SemanticDiagnostic::info(
+                SymbolSpan {
+                    start: SymbolLocation { line: 3, column: 1 },
+                    end: SymbolLocation { line: 3, column: 5 },
+                },
+                "Info".to_string(),
+                DiagnosticCode::PerformanceWarning,
+            ),
+        ];
+
+        let analysis_result = AnalysisResult {
+            symbol_table,
+            type_resolver,
+            diagnostics,
+            analysis_metadata: metadata,
+            analysis_time: Duration::from_millis(100),
+            analyzer_count: 5,
+        };
+
+        // Test result analysis methods
+        assert!(!analysis_result.is_success()); // Has errors
+        assert_eq!(analysis_result.error_count(), 1);
+        assert_eq!(analysis_result.warning_count(), 1);
+        assert_eq!(analysis_result.info_count(), 1);
+
+        // Test diagnostics by severity
+        use crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity;
+        let errors =
+            analysis_result.diagnostics_by_severity(DiagnosticSeverity::Error);
+        let warnings = analysis_result
+            .diagnostics_by_severity(DiagnosticSeverity::Warning);
+        let infos =
+            analysis_result.diagnostics_by_severity(DiagnosticSeverity::Info);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(infos.len(), 1);
+
+        // Test summary
+        let summary = analysis_result.summary();
+        assert!(!summary.success);
+        assert_eq!(summary.error_count, 1);
+        assert_eq!(summary.warning_count, 1);
+        assert_eq!(summary.info_count, 1);
+        assert_eq!(summary.total_diagnostics, 3);
+        assert_eq!(summary.analysis_time, Duration::from_millis(100));
+
+        // Test Display implementation for summary
+        let summary_str = format!("{summary}");
+        assert!(summary_str.contains("failed"));
+        assert!(summary_str.contains("1 errors"));
+        assert!(summary_str.contains("1 warnings"));
+        assert!(summary_str.contains("1 info"));
+    }
+
+    #[test]
+    fn test_analysis_metadata_value_equality() {
+        // Test PartialEq implementation for AnalysisMetadataValue
+        let string_val1 = AnalysisMetadataValue::String("test".to_string());
+        let string_val2 = AnalysisMetadataValue::String("test".to_string());
+        let string_val3 =
+            AnalysisMetadataValue::String("different".to_string());
+
+        assert_eq!(string_val1, string_val2);
+        assert_ne!(string_val1, string_val3);
+
+        let int_val1 = AnalysisMetadataValue::Integer(42);
+        let int_val2 = AnalysisMetadataValue::Integer(42);
+        let int_val3 = AnalysisMetadataValue::Integer(43);
+
+        assert_eq!(int_val1, int_val2);
+        assert_ne!(int_val1, int_val3);
+        assert_ne!(string_val1, int_val1); // Different types
+
+        let float_val1 = AnalysisMetadataValue::Float(3.14);
+        let float_val2 = AnalysisMetadataValue::Float(3.14);
+        assert_eq!(float_val1, float_val2);
+
+        let bool_val1 = AnalysisMetadataValue::Boolean(true);
+        let bool_val2 = AnalysisMetadataValue::Boolean(true);
+        let bool_val3 = AnalysisMetadataValue::Boolean(false);
+        assert_eq!(bool_val1, bool_val2);
+        assert_ne!(bool_val1, bool_val3);
+
+        let duration_val1 =
+            AnalysisMetadataValue::Duration(Duration::from_millis(100));
+        let duration_val2 =
+            AnalysisMetadataValue::Duration(Duration::from_millis(100));
+        assert_eq!(duration_val1, duration_val2);
+
+        let list_val1 = AnalysisMetadataValue::StringList(vec![
+            "a".to_string(),
+            "b".to_string(),
+        ]);
+        let list_val2 = AnalysisMetadataValue::StringList(vec![
+            "a".to_string(),
+            "b".to_string(),
+        ]);
+        let list_val3 = AnalysisMetadataValue::StringList(vec![
+            "a".to_string(),
+            "c".to_string(),
+        ]);
+        assert_eq!(list_val1, list_val2);
+        assert_ne!(list_val1, list_val3);
+    }
+
+    #[test]
+    fn test_successful_analysis_result() {
+        let symbol_table = SymbolTable::new();
+        let type_resolver = TypeResolver::new();
+        let metadata = AnalysisMetadata::new();
+
+        // Result with no errors (only warnings and info)
+        let diagnostics = vec![SemanticDiagnostic::warning(
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 5 },
+            },
+            "Warning".to_string(),
+            DiagnosticCode::DeprecatedFeature,
+        )];
+
+        let successful_result = AnalysisResult {
+            symbol_table,
+            type_resolver,
+            diagnostics,
+            analysis_metadata: metadata,
+            analysis_time: Duration::from_millis(50),
+            analyzer_count: 3,
+        };
+
+        assert!(successful_result.is_success()); // No errors
+        assert_eq!(successful_result.error_count(), 0);
+        assert_eq!(successful_result.warning_count(), 1);
+        assert_eq!(successful_result.info_count(), 0);
+
+        let summary = successful_result.summary();
+        assert!(summary.success);
+
+        let summary_str = format!("{summary}");
+        assert!(summary_str.contains("succeeded"));
+        assert!(summary_str.contains("0 errors"));
+        assert!(summary_str.contains("1 warnings"));
+    }
+
+    #[test]
+    fn test_scope_stack_default() {
+        let stack = ScopeStack::default();
+        assert!(stack.is_empty());
+        assert_eq!(stack.depth(), 0);
+        assert!(stack.current().is_none());
+    }
+
+    #[test]
+    fn test_analysis_statistics_default() {
+        let stats = AnalysisStatistics::default();
+        assert_eq!(stats.models_analyzed, 0);
+        assert_eq!(stats.enums_analyzed, 0);
+        assert_eq!(stats.fields_analyzed, 0);
+        assert_eq!(stats.relationships_found, 0);
+        assert_eq!(stats.attributes_validated, 0);
+        assert_eq!(stats.type_resolutions, 0);
+        assert_eq!(stats.circular_dependencies_detected, 0);
+        assert_eq!(stats.warnings_generated, 0);
+        assert_eq!(stats.errors_generated, 0);
+    }
+
+    #[test]
+    fn test_symbol_resolution_struct() {
+        use crate::core::semantic_analyzer::symbol_table::{
+            ModelSymbol, Symbol, SymbolMetadata, SymbolType, Visibility,
+        };
+
+        let symbol = Symbol {
+            name: "Test".to_string(),
+            symbol_type: SymbolType::Model(ModelSymbol {
+                field_count: 0,
+                has_primary_key: false,
+                block_attributes: 0,
+            }),
+            declaration_span: SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 5 },
+            },
+            visibility: Visibility::Public,
+            metadata: SymbolMetadata::new(),
+        };
+
+        let resolution = SymbolResolution {
+            symbol,
+            scope: "global".to_string(),
+        };
+
+        assert_eq!(resolution.scope, "global");
+        assert_eq!(resolution.symbol.name, "Test");
+    }
+
+    #[test]
+    fn test_scope_type_equality_and_debug() {
+        // Test equality
+        assert_eq!(ScopeType::Model, ScopeType::Model);
+        assert_ne!(ScopeType::Model, ScopeType::Enum);
+
+        // Test all variants exist
+        let _variants = [
+            ScopeType::Global,
+            ScopeType::Model,
+            ScopeType::Enum,
+            ScopeType::Datasource,
+            ScopeType::Generator,
+            ScopeType::Field,
+            ScopeType::EnumValue,
+        ];
+
+        // Test Debug formatting
+        assert_eq!(format!("{:?}", ScopeType::Global), "Global");
+        assert_eq!(format!("{:?}", ScopeType::Model), "Model");
+        assert_eq!(format!("{:?}", ScopeType::Enum), "Enum");
+        assert_eq!(format!("{:?}", ScopeType::Datasource), "Datasource");
+        assert_eq!(format!("{:?}", ScopeType::Generator), "Generator");
+        assert_eq!(format!("{:?}", ScopeType::Field), "Field");
+        assert_eq!(format!("{:?}", ScopeType::EnumValue), "EnumValue");
+
+        // Test Copy trait
+        let scope1 = ScopeType::Model;
+        let scope2 = scope1; // Should copy, not move
+        assert_eq!(scope1, scope2);
     }
 }
