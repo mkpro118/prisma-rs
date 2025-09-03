@@ -918,7 +918,7 @@ impl IdentifierRecognizer {
 impl TokenRecognizer for IdentifierRecognizer {
     fn can_handle(&self, input: &dyn CharacterStream) -> bool {
         if let Some(ch) = input.current() {
-            ch.is_alphabetic() || ch == '_'
+            ch.is_alphabetic()
         } else {
             false
         }
@@ -944,6 +944,19 @@ impl TokenRecognizer for IdentifierRecognizer {
                     span,
                 ));
             }
+
+            if identifier.is_empty() && ch == '_' {
+                let pos = input.position().to_symbol_location();
+                let span = SymbolSpan {
+                    start: pos.clone(),
+                    end: pos,
+                };
+                return Err(LexError::new(
+                    "Default parser does not support identifiers starting with underscore".to_owned(),
+                    span,
+                ));
+            }
+
             if ch.is_alphanumeric() || ch == '_' {
                 identifier.push(ch);
                 input.advance();
@@ -1575,8 +1588,6 @@ mod tests {
                 "with123numbers",
                 TokenType::Identifier("with123numbers".to_string()),
             ),
-            ("_", TokenType::Identifier("_".to_string())),
-            ("__private", TokenType::Identifier("__private".to_string())),
             ("true", TokenType::Literal("true".to_string())),
             ("false", TokenType::Literal("false".to_string())),
         ];
@@ -1585,6 +1596,14 @@ mod tests {
             let mut lexer = Lexer::default_for_input(input);
             let token = lexer.next_token().unwrap().unwrap();
             assert_eq!(*token.r#type(), expected, "Failed for input: {input}");
+        }
+
+        let test_cases = vec!["_", "__private"];
+
+        for input in test_cases {
+            let mut lexer = Lexer::default_for_input(input);
+            let token = lexer.next_token();
+            assert!(token.is_err());
         }
     }
 
