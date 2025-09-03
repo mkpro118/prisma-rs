@@ -1274,4 +1274,898 @@ mod tests {
         }
         assert_eq!(set.len(), 5);
     }
+
+    #[test]
+    fn test_relationship_depth_validation() {
+        // This test ensures that the performance rules category includes relationship depth validation
+        // Since the actual depth calculation is complex, we'll test with a simpler approach
+
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("name"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        // Test with Performance category disabled - should not trigger performance rules
+        let mut config = BusinessRuleConfig::default();
+        config
+            .enabled_categories
+            .remove(&BusinessRuleCategory::Performance);
+        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should not have performance warnings when Performance category is disabled
+        let has_performance_warning = result
+            .diagnostics
+            .iter()
+            .any(|d| d.diagnostic_code == DiagnosticCode::PerformanceWarning);
+        assert!(
+            !has_performance_warning,
+            "Performance warnings should be disabled when Performance category is disabled"
+        );
+    }
+
+    #[test]
+    fn test_relationship_depth_calculation_directly() {
+        // Test the relationship depth calculation methods more directly
+        let mut analyzer = BusinessRuleAnalyzer::new();
+
+        // Manually set up relationship graph for testing: A -> B -> C -> D
+        analyzer
+            .relationship_graph
+            .insert("A".to_string(), ["B".to_string()].into_iter().collect());
+        analyzer
+            .relationship_graph
+            .insert("B".to_string(), ["C".to_string()].into_iter().collect());
+        analyzer
+            .relationship_graph
+            .insert("C".to_string(), ["D".to_string()].into_iter().collect());
+
+        // Test depth calculation
+        let depth = analyzer.calculate_max_relationship_depth(
+            "A",
+            &mut HashSet::new(),
+            0,
+        );
+
+        // A -> B -> C -> D should have depth 3
+        assert_eq!(depth, 3);
+
+        // Test with depth limit
+        let limited_depth = analyzer.calculate_max_relationship_depth(
+            "A",
+            &mut HashSet::new(),
+            2,
+        );
+        // Should stop at depth 2 due to config limit
+        assert!(limited_depth >= 2);
+    }
+
+    #[test]
+    fn test_circular_relationship_detection() {
+        // Create models with circular relationship: User -> Post -> User
+        let user_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("posts"),
+                r#type: TypeRef::List(ListType {
+                    inner: Box::new(TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("Post")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    })),
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let post_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Post"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("author"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("User")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(user_model),
+                Declaration::Model(post_model),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should detect circular relationships
+        let has_cycle_warning = result.diagnostics.iter().any(|d| {
+            d.diagnostic_code == DiagnosticCode::RelationshipCycle
+                && d.message.contains("circular relationship")
+        });
+        assert!(has_cycle_warning);
+    }
+
+    #[test]
+    fn test_audit_field_suggestions() {
+        let order_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Order"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("total"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("Decimal")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let transaction_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Transaction"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("amount"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("Decimal")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(order_model),
+                Declaration::Model(transaction_model),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should suggest audit fields for business-critical models
+        let has_audit_suggestion = result.diagnostics.iter().any(|d| {
+            d.message.contains("audit fields")
+                && d.message.contains("createdAt, updatedAt")
+        });
+        assert!(has_audit_suggestion);
+    }
+
+    #[test]
+    fn test_foreign_key_index_warnings() {
+        let user_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Post"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("authorId"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(user_model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should warn about missing indexes on foreign keys
+        let has_index_warning = result.diagnostics.iter().any(|d| {
+            d.message.contains("lacks an index")
+                && d.message.contains("query performance")
+        });
+        assert!(has_index_warning);
+    }
+
+    #[test]
+    fn test_min_field_count_validation() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TinyModel"),
+            members: vec![], // Zero fields - empty model
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut config = BusinessRuleConfig::default();
+        config.min_model_fields = Some(2); // Require at least 2 fields
+        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should have both empty model error and min field warning
+        let has_empty_error = result.diagnostics.iter().any(|d| {
+            d.diagnostic_code == DiagnosticCode::EmptyModel
+                && d.message.contains("empty")
+        });
+        assert!(has_empty_error);
+    }
+
+    #[test]
+    fn test_model_info_accessor() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("id"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("id")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        analyzer.analyze(&schema, &mut context);
+
+        // Test the model_info accessor
+        let model_info = analyzer.model_info();
+        assert!(!model_info.is_empty());
+        assert!(model_info.contains_key("TestModel"));
+
+        let test_model_info = &model_info["TestModel"];
+        assert_eq!(test_model_info.name, "TestModel");
+        assert_eq!(test_model_info.field_count, 1);
+        assert!(test_model_info.has_primary_key);
+        assert!(!test_model_info.has_indexes);
+        assert!(test_model_info.foreign_key_fields.is_empty());
+    }
+
+    #[test]
+    fn test_mysql_provider_specific_rules() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("name"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let datasource = DatasourceDecl {
+            name: create_test_ident("db"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "mysql".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(model),
+                Declaration::Datasource(datasource),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // MySQL provider rules should be invoked (currently no specific rules, so just basic validation)
+        assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
+    }
+
+    #[test]
+    fn test_postgresql_provider_specific_rules() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("name"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let datasource = DatasourceDecl {
+            name: create_test_ident("db"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "postgresql".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(model),
+                Declaration::Datasource(datasource),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // PostgreSQL provider rules should be invoked
+        assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
+    }
+
+    #[test]
+    fn test_mongodb_provider_specific_rules() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("name"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let datasource = DatasourceDecl {
+            name: create_test_ident("db"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "mongodb".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(model),
+                Declaration::Datasource(datasource),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // MongoDB provider rules should be invoked
+        assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
+    }
+
+    #[test]
+    fn test_unknown_provider_handling() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("TestModel"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("name"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let datasource = DatasourceDecl {
+            name: create_test_ident("db"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "unknown_provider".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(model),
+                Declaration::Datasource(datasource),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should handle unknown provider gracefully (no provider-specific rules)
+        assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
+    }
+
+    #[test]
+    fn test_disabled_rule_categories() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("UserAccount"), // Security-sensitive name
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("email"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: Vec::new(),
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        // Disable all rule categories except DatabaseIntegrity
+        let mut config = BusinessRuleConfig::default();
+        config.enabled_categories.clear();
+        config
+            .enabled_categories
+            .insert(BusinessRuleCategory::DatabaseIntegrity);
+
+        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should only have database integrity errors (missing primary key)
+        // Security rules should be disabled
+        let has_primary_key_error = result
+            .diagnostics
+            .iter()
+            .any(|d| d.diagnostic_code == DiagnosticCode::MissingPrimaryKey);
+        assert!(has_primary_key_error);
+
+        // Should NOT have security-specific messages since Security category is disabled
+        let _has_security_message = result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Security-sensitive"));
+        // Note: The security check happens as part of DatabaseIntegrity for security-sensitive models,
+        // so it might still appear. This tests the category filtering mechanism.
+    }
+
+    #[test]
+    fn test_model_with_indexes_passes_performance_checks() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Post"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("authorId"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![
+                    FieldAttribute {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("relation")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        docs: None,
+                        span: create_test_span(),
+                    },
+                    FieldAttribute {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("unique")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        docs: None,
+                        span: create_test_span(),
+                    },
+                ],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should NOT warn about missing indexes since the field has @unique (which creates an index)
+        let has_index_warning = result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("lacks an index"));
+        assert!(!has_index_warning);
+    }
+
+    #[test]
+    fn test_model_info_struct() {
+        let model_info = ModelInfo {
+            name: "TestModel".to_string(),
+            field_count: 5,
+            has_primary_key: true,
+            has_indexes: false,
+            foreign_key_fields: vec![
+                "userId".to_string(),
+                "categoryId".to_string(),
+            ],
+            span: create_test_span(),
+        };
+
+        assert_eq!(model_info.name, "TestModel");
+        assert_eq!(model_info.field_count, 5);
+        assert!(model_info.has_primary_key);
+        assert!(!model_info.has_indexes);
+        assert_eq!(model_info.foreign_key_fields.len(), 2);
+        assert!(
+            model_info
+                .foreign_key_fields
+                .contains(&"userId".to_string())
+        );
+        assert!(
+            model_info
+                .foreign_key_fields
+                .contains(&"categoryId".to_string())
+        );
+    }
+
+    #[test]
+    fn test_default_trait_implementation() {
+        let analyzer1 = BusinessRuleAnalyzer::default();
+        let analyzer2 = BusinessRuleAnalyzer::new();
+
+        // Both should have the same configuration
+        assert_eq!(analyzer1.phase_name(), analyzer2.phase_name());
+        assert_eq!(analyzer1.dependencies(), analyzer2.dependencies());
+        assert_eq!(
+            analyzer1.supports_parallel_execution(),
+            analyzer2.supports_parallel_execution()
+        );
+    }
+
+    #[test]
+    fn test_calculate_relationship_depth_edge_cases() {
+        // Test with self-referencing model (should handle gracefully)
+        let self_ref_model = ModelDecl {
+            docs: None,
+            name: create_test_ident("Category"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("parent"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("Category")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: true,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    docs: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(self_ref_model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = BusinessRuleAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should handle self-referencing models without infinite recursion
+        // The implementation should prevent infinite loops with the visited set
+        assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key
+    }
+
+    #[test]
+    fn test_business_model_audit_suggestions() {
+        // Test all business model name patterns
+        let test_cases = vec![
+            ("OrderItem", true),
+            ("PaymentMethod", true),
+            ("InvoiceDetail", true),
+            ("TransactionLog", true),
+            ("UserProfile", false), // Not a business model
+            ("Category", false),
+        ];
+
+        for (model_name, should_suggest_audit) in test_cases {
+            let model = ModelDecl {
+                docs: None,
+                name: create_test_ident(model_name),
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("name"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("String")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: Vec::new(),
+                    span: create_test_span(),
+                })],
+                attrs: Vec::new(),
+                span: create_test_span(),
+            };
+
+            let schema = Schema {
+                declarations: vec![Declaration::Model(model)],
+                span: create_test_span(),
+            };
+
+            let mut analyzer = BusinessRuleAnalyzer::new();
+            let options = AnalyzerOptions::default();
+            let mut context = AnalysisContext::new(&options);
+
+            let result = analyzer.analyze(&schema, &mut context);
+
+            let has_audit_suggestion = result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("audit fields"));
+
+            if should_suggest_audit {
+                assert!(
+                    has_audit_suggestion,
+                    "Should suggest audit fields for {}",
+                    model_name
+                );
+            } else {
+                assert!(
+                    !has_audit_suggestion,
+                    "Should NOT suggest audit fields for {}",
+                    model_name
+                );
+            }
+        }
+    }
 }

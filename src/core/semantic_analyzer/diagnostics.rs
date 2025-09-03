@@ -943,4 +943,681 @@ mod tests {
         let keys: Vec<_> = metadata.keys().collect();
         assert_eq!(keys.len(), 2);
     }
+
+    #[test]
+    fn test_diagnostic_metadata_iterators() {
+        let mut metadata = DiagnosticMetadata::new();
+        metadata.add("key1".to_string(), "value1".to_string());
+        metadata.add("key2".to_string(), "value2".to_string());
+
+        let values: Vec<_> = metadata.values().collect();
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&&"value1".to_string()));
+        assert!(values.contains(&&"value2".to_string()));
+
+        let entries: Vec<_> = metadata.iter().collect();
+        assert_eq!(entries.len(), 2);
+
+        // Test default
+        let default_metadata = DiagnosticMetadata::default();
+        assert!(default_metadata.keys().next().is_none());
+    }
+
+    #[test]
+    fn test_diagnostic_severity_display() {
+        assert_eq!(format!("{}", DiagnosticSeverity::Info), "info");
+        assert_eq!(format!("{}", DiagnosticSeverity::Warning), "warning");
+        assert_eq!(format!("{}", DiagnosticSeverity::Error), "error");
+    }
+
+    #[test]
+    fn test_diagnostic_fatal_detection() {
+        let fatal_diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Circular dependency".to_string(),
+            DiagnosticCode::CircularDependency,
+        );
+        assert!(fatal_diagnostic.is_fatal());
+
+        let structure_diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Invalid schema".to_string(),
+            DiagnosticCode::InvalidSchemaStructure,
+        );
+        assert!(structure_diagnostic.is_fatal());
+
+        let internal_diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Internal error".to_string(),
+            DiagnosticCode::InternalError,
+        );
+        assert!(internal_diagnostic.is_fatal());
+
+        let non_fatal_diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Unknown type".to_string(),
+            DiagnosticCode::UnknownType,
+        );
+        assert!(!non_fatal_diagnostic.is_fatal());
+
+        let warning_diagnostic = SemanticDiagnostic::warning(
+            test_span(),
+            "Deprecated feature".to_string(),
+            DiagnosticCode::DeprecatedFeature,
+        );
+        assert!(!warning_diagnostic.is_fatal());
+    }
+
+    #[test]
+    fn test_diagnostic_builder_methods() {
+        let diagnostic = SemanticDiagnostic::info(
+            test_span(),
+            "Info message".to_string(),
+            DiagnosticCode::ExperimentalFeature,
+        );
+        assert!(diagnostic.is_info());
+        assert!(!diagnostic.is_error());
+        assert!(!diagnostic.is_warning());
+
+        let warning_diagnostic = SemanticDiagnostic::warning(
+            test_span(),
+            "Warning message".to_string(),
+            DiagnosticCode::PerformanceWarning,
+        );
+        assert!(warning_diagnostic.is_warning());
+        assert!(!warning_diagnostic.is_error());
+        assert!(!warning_diagnostic.is_info());
+    }
+
+    #[test]
+    fn test_diagnostic_with_related_spans() {
+        let related_span = RelatedSpan {
+            span: test_span(),
+            message: "Related location".to_string(),
+        };
+
+        let diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Main error".to_string(),
+            DiagnosticCode::DuplicateDeclaration,
+        )
+        .with_related_span(test_span(), "First declaration".to_string())
+        .with_related_spans(vec![related_span]);
+
+        assert_eq!(diagnostic.related_spans.len(), 2);
+        assert_eq!(diagnostic.related_spans[0].message, "First declaration");
+        assert_eq!(diagnostic.related_spans[1].message, "Related location");
+    }
+
+    #[test]
+    fn test_diagnostic_with_metadata() {
+        let diagnostic = SemanticDiagnostic::error(
+            test_span(),
+            "Error with metadata".to_string(),
+            DiagnosticCode::TypeMismatch,
+        )
+        .with_metadata("expected_type".to_string(), "String".to_string())
+        .with_metadata("actual_type".to_string(), "Int".to_string());
+
+        assert_eq!(diagnostic.metadata.get("expected_type"), Some("String"));
+        assert_eq!(diagnostic.metadata.get("actual_type"), Some("Int"));
+    }
+
+    #[test]
+    fn test_fix_hint_builder() {
+        let replacement1 = TextReplacement {
+            span: test_span(),
+            new_text: "replacement1".to_string(),
+        };
+        let replacement2 = TextReplacement {
+            span: test_span(),
+            new_text: "replacement2".to_string(),
+        };
+
+        let fix_hint = FixHint::new("Multi-replacement fix".to_string())
+            .with_replacement(replacement1)
+            .with_replacement(replacement2)
+            .as_safe_auto_fix();
+
+        assert_eq!(fix_hint.description, "Multi-replacement fix");
+        assert_eq!(fix_hint.replacements.len(), 2);
+        assert!(fix_hint.is_safe_auto_fix);
+    }
+
+    #[test]
+    fn test_diagnostic_collector_filtering() {
+        let mut collector = DiagnosticCollector::new();
+
+        collector.add(SemanticDiagnostic::error(
+            test_span(),
+            "Error 1".to_string(),
+            DiagnosticCode::UnknownType,
+        ));
+        collector.add(SemanticDiagnostic::warning(
+            test_span(),
+            "Warning 1".to_string(),
+            DiagnosticCode::PerformanceWarning,
+        ));
+        collector.add(SemanticDiagnostic::info(
+            test_span(),
+            "Info 1".to_string(),
+            DiagnosticCode::ExperimentalFeature,
+        ));
+        collector.add(SemanticDiagnostic::error(
+            test_span(),
+            "Error 2".to_string(),
+            DiagnosticCode::InvalidRelation,
+        ));
+
+        let errors = collector.by_severity(DiagnosticSeverity::Error);
+        assert_eq!(errors.len(), 2);
+
+        let warnings = collector.by_severity(DiagnosticSeverity::Warning);
+        assert_eq!(warnings.len(), 1);
+
+        let infos = collector.by_severity(DiagnosticSeverity::Info);
+        assert_eq!(infos.len(), 1);
+
+        let type_system_diagnostics =
+            collector.by_category(DiagnosticCategory::TypeSystem);
+        assert_eq!(type_system_diagnostics.len(), 1);
+
+        let relationship_diagnostics =
+            collector.by_category(DiagnosticCategory::Relationships);
+        assert_eq!(relationship_diagnostics.len(), 1);
+
+        let performance_diagnostics =
+            collector.by_category(DiagnosticCategory::Performance);
+        assert_eq!(performance_diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_collector_clear_and_take() {
+        let mut collector = DiagnosticCollector::new();
+        collector.add(SemanticDiagnostic::error(
+            test_span(),
+            "Error".to_string(),
+            DiagnosticCode::UnknownType,
+        ));
+
+        assert_eq!(collector.len(), 1);
+        collector.clear();
+        assert_eq!(collector.len(), 0);
+        assert!(collector.is_empty());
+
+        collector.add(SemanticDiagnostic::error(
+            test_span(),
+            "Error".to_string(),
+            DiagnosticCode::UnknownType,
+        ));
+
+        let diagnostics = collector.take_all();
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_collector_extend() {
+        let mut collector = DiagnosticCollector::new();
+        let diagnostics = vec![
+            SemanticDiagnostic::error(
+                test_span(),
+                "Error 1".to_string(),
+                DiagnosticCode::UnknownType,
+            ),
+            SemanticDiagnostic::warning(
+                test_span(),
+                "Warning 1".to_string(),
+                DiagnosticCode::PerformanceWarning,
+            ),
+        ];
+
+        collector.extend(diagnostics);
+        assert_eq!(collector.len(), 2);
+
+        let counts = collector.severity_counts();
+        assert_eq!(counts.errors, 1);
+        assert_eq!(counts.warnings, 1);
+        assert_eq!(counts.infos, 0);
+        assert_eq!(counts.total(), 2);
+        assert!(counts.has_errors());
+        assert!(counts.has_warnings());
+        assert!(!counts.has_infos());
+    }
+
+    #[test]
+    fn test_diagnostic_collector_limit_with_extend() {
+        let mut collector = DiagnosticCollector::with_limit(1);
+        let diagnostics = vec![
+            SemanticDiagnostic::error(
+                test_span(),
+                "Error 1".to_string(),
+                DiagnosticCode::UnknownType,
+            ),
+            SemanticDiagnostic::error(
+                test_span(),
+                "Error 2".to_string(),
+                DiagnosticCode::UnknownType,
+            ),
+        ];
+
+        collector.extend(diagnostics);
+        assert_eq!(collector.len(), 1);
+        assert!(collector.is_at_limit());
+    }
+
+    #[test]
+    fn test_all_diagnostic_codes_as_str() {
+        // Symbol Resolution
+        assert_eq!(DiagnosticCode::UndeclaredIdentifier.as_str(), "E001");
+        assert_eq!(DiagnosticCode::DuplicateDeclaration.as_str(), "E002");
+        assert_eq!(DiagnosticCode::InvalidShadowing.as_str(), "E003");
+        assert_eq!(DiagnosticCode::ReservedWordUsed.as_str(), "E004");
+
+        // Type System
+        assert_eq!(DiagnosticCode::TypeMismatch.as_str(), "E101");
+        assert_eq!(DiagnosticCode::UnknownType.as_str(), "E102");
+        assert_eq!(DiagnosticCode::CircularDependency.as_str(), "E103");
+        assert_eq!(DiagnosticCode::InvalidTypeModifier.as_str(), "E104");
+        assert_eq!(DiagnosticCode::InvalidTypeUsage.as_str(), "E105");
+        assert_eq!(DiagnosticCode::TypeConstraintViolation.as_str(), "E106");
+        assert_eq!(DiagnosticCode::ConstraintViolation.as_str(), "E107");
+        assert_eq!(DiagnosticCode::IncompatibleTypes.as_str(), "E108");
+
+        // Relationships
+        assert_eq!(DiagnosticCode::InvalidRelation.as_str(), "E201");
+        assert_eq!(DiagnosticCode::MissingBackReference.as_str(), "E202");
+        assert_eq!(DiagnosticCode::ConflictingRelations.as_str(), "E203");
+        assert_eq!(DiagnosticCode::InvalidReferentialAction.as_str(), "E204");
+        assert_eq!(DiagnosticCode::RelationshipCycle.as_str(), "E205");
+
+        // Attributes
+        assert_eq!(DiagnosticCode::UnknownAttribute.as_str(), "E301");
+        assert_eq!(DiagnosticCode::MissingRequiredAttribute.as_str(), "E302");
+        assert_eq!(DiagnosticCode::ConflictingAttributes.as_str(), "E303");
+        assert_eq!(DiagnosticCode::InvalidAttributeArgument.as_str(), "E304");
+        assert_eq!(DiagnosticCode::AttributeNotApplicable.as_str(), "E305");
+
+        // Business Rules
+        assert_eq!(DiagnosticCode::MissingPrimaryKey.as_str(), "E401");
+        assert_eq!(DiagnosticCode::InvalidIndexDefinition.as_str(), "E402");
+        assert_eq!(DiagnosticCode::DatabaseProviderMismatch.as_str(), "E403");
+
+        // Warnings
+        assert_eq!(DiagnosticCode::DeprecatedFeature.as_str(), "W001");
+        assert_eq!(DiagnosticCode::PerformanceWarning.as_str(), "W101");
+        assert_eq!(DiagnosticCode::IndexSuggestion.as_str(), "W102");
+        assert_eq!(DiagnosticCode::QueryOptimizationHint.as_str(), "W103");
+        assert_eq!(DiagnosticCode::EmptyModel.as_str(), "W201");
+        assert_eq!(DiagnosticCode::UnusedDeclaration.as_str(), "W202");
+        assert_eq!(DiagnosticCode::NamingConvention.as_str(), "W603");
+        assert_eq!(DiagnosticCode::ExperimentalFeature.as_str(), "W604");
+
+        // Schema Structure
+        assert_eq!(DiagnosticCode::InvalidSchemaStructure.as_str(), "E501");
+        assert_eq!(DiagnosticCode::MissingField.as_str(), "E504");
+        assert_eq!(DiagnosticCode::MissingDatasource.as_str(), "W505");
+
+        // Naming
+        assert_eq!(DiagnosticCode::InvalidIdentifier.as_str(), "E601");
+        assert_eq!(DiagnosticCode::ReservedKeyword.as_str(), "E602");
+
+        // Internal
+        assert_eq!(DiagnosticCode::InternalError.as_str(), "E999");
+        assert_eq!(DiagnosticCode::AnalysisTimeout.as_str(), "E998");
+    }
+
+    #[test]
+    fn test_all_diagnostic_codes_category() {
+        // Symbol Resolution category
+        assert_eq!(
+            DiagnosticCode::UndeclaredIdentifier.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::DuplicateDeclaration.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidShadowing.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::ReservedWordUsed.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidIdentifier.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::ReservedKeyword.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::NamingConvention.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+        assert_eq!(
+            DiagnosticCode::ExperimentalFeature.category(),
+            DiagnosticCategory::SymbolResolution
+        );
+
+        // Type System category
+        assert_eq!(
+            DiagnosticCode::TypeMismatch.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::UnknownType.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::CircularDependency.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidTypeModifier.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidTypeUsage.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::TypeConstraintViolation.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::ConstraintViolation.category(),
+            DiagnosticCategory::TypeSystem
+        );
+        assert_eq!(
+            DiagnosticCode::IncompatibleTypes.category(),
+            DiagnosticCategory::TypeSystem
+        );
+
+        // Relationships category
+        assert_eq!(
+            DiagnosticCode::InvalidRelation.category(),
+            DiagnosticCategory::Relationships
+        );
+        assert_eq!(
+            DiagnosticCode::MissingBackReference.category(),
+            DiagnosticCategory::Relationships
+        );
+        assert_eq!(
+            DiagnosticCode::ConflictingRelations.category(),
+            DiagnosticCategory::Relationships
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidReferentialAction.category(),
+            DiagnosticCategory::Relationships
+        );
+        assert_eq!(
+            DiagnosticCode::RelationshipCycle.category(),
+            DiagnosticCategory::Relationships
+        );
+
+        // Attributes category
+        assert_eq!(
+            DiagnosticCode::UnknownAttribute.category(),
+            DiagnosticCategory::Attributes
+        );
+        assert_eq!(
+            DiagnosticCode::MissingRequiredAttribute.category(),
+            DiagnosticCategory::Attributes
+        );
+        assert_eq!(
+            DiagnosticCode::ConflictingAttributes.category(),
+            DiagnosticCategory::Attributes
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidAttributeArgument.category(),
+            DiagnosticCategory::Attributes
+        );
+        assert_eq!(
+            DiagnosticCode::AttributeNotApplicable.category(),
+            DiagnosticCategory::Attributes
+        );
+
+        // Business Rules category
+        assert_eq!(
+            DiagnosticCode::MissingPrimaryKey.category(),
+            DiagnosticCategory::BusinessRules
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidIndexDefinition.category(),
+            DiagnosticCategory::BusinessRules
+        );
+        assert_eq!(
+            DiagnosticCode::DatabaseProviderMismatch.category(),
+            DiagnosticCategory::BusinessRules
+        );
+        assert_eq!(
+            DiagnosticCode::DeprecatedFeature.category(),
+            DiagnosticCategory::BusinessRules
+        );
+
+        // Performance category
+        assert_eq!(
+            DiagnosticCode::PerformanceWarning.category(),
+            DiagnosticCategory::Performance
+        );
+        assert_eq!(
+            DiagnosticCode::IndexSuggestion.category(),
+            DiagnosticCategory::Performance
+        );
+        assert_eq!(
+            DiagnosticCode::QueryOptimizationHint.category(),
+            DiagnosticCategory::Performance
+        );
+
+        // Schema Structure category
+        assert_eq!(
+            DiagnosticCode::InvalidSchemaStructure.category(),
+            DiagnosticCategory::SchemaStructure
+        );
+        assert_eq!(
+            DiagnosticCode::EmptyModel.category(),
+            DiagnosticCategory::SchemaStructure
+        );
+        assert_eq!(
+            DiagnosticCode::UnusedDeclaration.category(),
+            DiagnosticCategory::SchemaStructure
+        );
+        assert_eq!(
+            DiagnosticCode::MissingField.category(),
+            DiagnosticCategory::SchemaStructure
+        );
+        assert_eq!(
+            DiagnosticCode::MissingDatasource.category(),
+            DiagnosticCategory::SchemaStructure
+        );
+
+        // Internal category
+        assert_eq!(
+            DiagnosticCode::InternalError.category(),
+            DiagnosticCategory::Internal
+        );
+        assert_eq!(
+            DiagnosticCode::AnalysisTimeout.category(),
+            DiagnosticCategory::Internal
+        );
+    }
+
+    #[test]
+    fn test_all_diagnostic_codes_default_severity() {
+        // Warning severities
+        assert_eq!(
+            DiagnosticCode::DeprecatedFeature.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticCode::PerformanceWarning.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticCode::IndexSuggestion.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticCode::QueryOptimizationHint.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticCode::EmptyModel.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            DiagnosticCode::UnusedDeclaration.default_severity(),
+            DiagnosticSeverity::Warning
+        );
+
+        // Error severities (test a few representative ones)
+        assert_eq!(
+            DiagnosticCode::UndeclaredIdentifier.default_severity(),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticCode::TypeMismatch.default_severity(),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticCode::InvalidRelation.default_severity(),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticCode::UnknownAttribute.default_severity(),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticCode::MissingPrimaryKey.default_severity(),
+            DiagnosticSeverity::Error
+        );
+        assert_eq!(
+            DiagnosticCode::InternalError.default_severity(),
+            DiagnosticSeverity::Error
+        );
+    }
+
+    #[test]
+    fn test_factory_method_unknown_type() {
+        let diagnostic =
+            SemanticDiagnostic::unknown_type(test_span(), "MyType");
+        assert!(diagnostic.is_error());
+        assert_eq!(diagnostic.diagnostic_code, DiagnosticCode::UnknownType);
+        assert_eq!(diagnostic.message, "Unknown type 'MyType'");
+        assert!(diagnostic.suggestion.is_some());
+        assert_eq!(
+            diagnostic.suggestion.unwrap(),
+            "Check if the type name is spelled correctly and declared"
+        );
+    }
+
+    #[test]
+    fn test_factory_method_circular_dependency() {
+        let cycle = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let diagnostic =
+            SemanticDiagnostic::circular_dependency(test_span(), &cycle);
+
+        assert!(diagnostic.is_error());
+        assert_eq!(
+            diagnostic.diagnostic_code,
+            DiagnosticCode::CircularDependency
+        );
+        assert_eq!(
+            diagnostic.message,
+            "Circular dependency detected: A -> B -> C"
+        );
+        assert!(diagnostic.suggestion.is_some());
+        assert_eq!(
+            diagnostic.suggestion.unwrap(),
+            "Break the cycle by using optional fields or forward declarations"
+        );
+    }
+
+    #[test]
+    fn test_factory_method_duplicate_declaration() {
+        let existing_span = SymbolSpan {
+            start: SymbolLocation { line: 2, column: 1 },
+            end: SymbolLocation {
+                line: 2,
+                column: 10,
+            },
+        };
+
+        let diagnostic = SemanticDiagnostic::duplicate_declaration(
+            test_span(),
+            "MyModel",
+            existing_span.clone(),
+        );
+
+        assert!(diagnostic.is_error());
+        assert_eq!(
+            diagnostic.diagnostic_code,
+            DiagnosticCode::DuplicateDeclaration
+        );
+        assert_eq!(diagnostic.message, "Duplicate declaration of 'MyModel'");
+        assert!(diagnostic.suggestion.is_some());
+        assert_eq!(diagnostic.related_spans.len(), 1);
+        assert_eq!(diagnostic.related_spans[0].span, existing_span);
+        assert_eq!(
+            diagnostic.related_spans[0].message,
+            "First declaration here"
+        );
+    }
+
+    #[test]
+    fn test_factory_method_deprecated_feature_without_replacement() {
+        let diagnostic = SemanticDiagnostic::deprecated_feature(
+            test_span(),
+            "oldFeature",
+            None,
+        );
+
+        assert!(diagnostic.is_warning());
+        assert_eq!(
+            diagnostic.diagnostic_code,
+            DiagnosticCode::DeprecatedFeature
+        );
+        assert_eq!(diagnostic.message, "Feature 'oldFeature' is deprecated");
+        assert!(diagnostic.suggestion.is_some());
+        assert_eq!(
+            diagnostic.suggestion.unwrap(),
+            "Consider removing this deprecated feature"
+        );
+    }
+
+    #[test]
+    fn test_factory_method_performance_warning() {
+        let diagnostic = SemanticDiagnostic::performance_warning(
+            test_span(),
+            "Inefficient query detected".to_string(),
+            "Add an index on the queried field".to_string(),
+        );
+
+        assert!(diagnostic.is_warning());
+        assert_eq!(
+            diagnostic.diagnostic_code,
+            DiagnosticCode::PerformanceWarning
+        );
+        assert_eq!(diagnostic.message, "Inefficient query detected");
+        assert!(diagnostic.suggestion.is_some());
+        assert_eq!(
+            diagnostic.suggestion.unwrap(),
+            "Add an index on the queried field"
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_counts_empty() {
+        let counts = DiagnosticCounts::default();
+        assert_eq!(counts.errors, 0);
+        assert_eq!(counts.warnings, 0);
+        assert_eq!(counts.infos, 0);
+        assert_eq!(counts.total(), 0);
+        assert!(!counts.has_errors());
+        assert!(!counts.has_warnings());
+        assert!(!counts.has_infos());
+    }
 }
