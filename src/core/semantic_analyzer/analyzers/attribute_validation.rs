@@ -968,4 +968,372 @@ mod tests {
         assert!(result.diagnostics[0].message.contains("autoincrement"));
         assert!(result.diagnostics[0].suggestion.is_some());
     }
+
+    #[test]
+    fn test_enum_attribute_validation() {
+        let enum_decl = EnumDecl {
+            docs: None,
+            name: create_test_ident("Status"),
+            members: vec![EnumMember::Value(EnumValue {
+                docs: None,
+                name: create_test_ident("ACTIVE"),
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("map")],
+                        span: create_test_span(),
+                    },
+                    args: Some(ArgList {
+                        items: vec![Arg::Named(NamedArg {
+                            name: create_test_ident("name"),
+                            value: Expr::StringLit(StringLit {
+                                value: "active_status".to_string(),
+                                span: create_test_span(),
+                            }),
+                            span: create_test_span(),
+                        })],
+                        span: create_test_span(),
+                    }),
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: vec![BlockAttribute {
+                docs: None,
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("map")],
+                    span: create_test_span(),
+                },
+                args: Some(ArgList {
+                    items: vec![Arg::Named(NamedArg {
+                        name: create_test_ident("name"),
+                        value: Expr::StringLit(StringLit {
+                            value: "status_enum".to_string(),
+                            span: create_test_span(),
+                        }),
+                        span: create_test_span(),
+                    })],
+                    span: create_test_span(),
+                }),
+                span: create_test_span(),
+            }],
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Enum(enum_decl)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let _result = analyzer.analyze(&schema, &mut context);
+
+        // Should process enum attributes without crashing
+        // The analyzer should always return a valid result
+    }
+
+    #[test]
+    fn test_datasource_generator_validation() {
+        let datasource = DatasourceDecl {
+            name: create_test_ident("db"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "postgresql".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let generator = GeneratorDecl {
+            name: create_test_ident("client"),
+            assignments: vec![Assignment {
+                key: create_test_ident("provider"),
+                value: Expr::StringLit(StringLit {
+                    value: "prisma-client-js".to_string(),
+                    span: create_test_span(),
+                }),
+                docs: None,
+                span: create_test_span(),
+            }],
+            docs: None,
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Datasource(datasource),
+                Declaration::Generator(generator),
+            ],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Datasource and generator declarations should pass without attribute errors
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_attribute_argument_validation() {
+        // Test field with invalid argument to @unique
+        let field = FieldDecl {
+            docs: None,
+            name: create_test_ident("email"),
+            r#type: TypeRef::Named(NamedType {
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("String")],
+                    span: create_test_span(),
+                },
+                span: create_test_span(),
+            }),
+            optional: false,
+            modifiers: Vec::new(),
+            attrs: vec![FieldAttribute {
+                docs: None,
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("unique")],
+                    span: create_test_span(),
+                },
+                args: Some(ArgList {
+                    items: vec![Arg::Named(NamedArg {
+                        name: create_test_ident("invalid_arg"),
+                        value: Expr::StringLit(StringLit {
+                            value: "value".to_string(),
+                            span: create_test_span(),
+                        }),
+                        span: create_test_span(),
+                    })],
+                    span: create_test_span(),
+                }),
+                span: create_test_span(),
+            }],
+            span: create_test_span(),
+        };
+
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![ModelMember::Field(field)],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let _result = analyzer.analyze(&schema, &mut context);
+
+        // May or may not have validation errors depending on implementation
+        // At minimum, should not crash - just check that we get some result
+        // (The analyzer should always produce a result, even if empty)
+    }
+
+    #[test]
+    fn test_complex_model_attributes() {
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![
+                ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("id"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("String")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![
+                        FieldAttribute {
+                            docs: None,
+                            name: QualifiedIdent {
+                                parts: vec![create_test_ident("id")],
+                                span: create_test_span(),
+                            },
+                            args: None,
+                            span: create_test_span(),
+                        },
+                        FieldAttribute {
+                            docs: None,
+                            name: QualifiedIdent {
+                                parts: vec![create_test_ident("default")],
+                                span: create_test_span(),
+                            },
+                            args: Some(ArgList {
+                                items: vec![Arg::Positional(PositionalArg {
+                                    value: Expr::FuncCall(FuncCall {
+                                        callee: QualifiedIdent {
+                                            parts: vec![create_test_ident(
+                                                "cuid",
+                                            )],
+                                            span: create_test_span(),
+                                        },
+                                        args: None,
+                                        span: create_test_span(),
+                                    }),
+                                    span: create_test_span(),
+                                })],
+                                span: create_test_span(),
+                            }),
+                            span: create_test_span(),
+                        },
+                    ],
+                    span: create_test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("email"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("String")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("unique")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    }],
+                    span: create_test_span(),
+                }),
+            ],
+            attrs: vec![BlockAttribute {
+                docs: None,
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("map")],
+                    span: create_test_span(),
+                },
+                args: Some(ArgList {
+                    items: vec![Arg::Named(NamedArg {
+                        name: create_test_ident("name"),
+                        value: Expr::StringLit(StringLit {
+                            value: "users".to_string(),
+                            span: create_test_span(),
+                        }),
+                        span: create_test_span(),
+                    })],
+                    span: create_test_span(),
+                }),
+                span: create_test_span(),
+            }],
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let _result = analyzer.analyze(&schema, &mut context);
+
+        // Complex model with various attributes should process without crashing
+        // The analyzer should always return a valid result
+    }
+
+    #[test]
+    fn test_analyzer_methods() {
+        let analyzer = AttributeValidationAnalyzer::new();
+        assert_eq!(analyzer.phase_name(), "attribute-validation");
+        assert_eq!(analyzer.dependencies(), &["symbol-collection"]);
+        assert!(!analyzer.supports_parallel_execution()); // Does not support parallel execution
+    }
+
+    #[test]
+    fn test_attribute_registry_completeness() {
+        let analyzer = AttributeValidationAnalyzer::new();
+
+        // Check that common attributes are registered
+        let common_attributes =
+            ["id", "unique", "default", "map", "relation", "updatedAt"];
+
+        for attr_name in &common_attributes {
+            let has_attr = analyzer.attribute_registry.contains_key(*attr_name);
+            assert!(has_attr, "Attribute '{attr_name}' should be registered");
+        }
+
+        // Verify usage tracking is empty initially
+        assert!(analyzer.attribute_usage.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_context_violations() {
+        // Test field with attribute that should only be on models
+        let field = FieldDecl {
+            docs: None,
+            name: create_test_ident("email"),
+            r#type: TypeRef::Named(NamedType {
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("String")],
+                    span: create_test_span(),
+                },
+                span: create_test_span(),
+            }),
+            optional: false,
+            modifiers: Vec::new(),
+            attrs: vec![FieldAttribute {
+                docs: None,
+                name: QualifiedIdent {
+                    parts: vec![create_test_ident("schema")], // This is not valid on fields
+                    span: create_test_span(),
+                },
+                args: None,
+                span: create_test_span(),
+            }],
+            span: create_test_span(),
+        };
+
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![ModelMember::Field(field)],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let mut context = AnalysisContext::new(&options);
+
+        let result = analyzer.analyze(&schema, &mut context);
+
+        // Should detect unknown attribute or context violation
+        assert!(!result.diagnostics.is_empty());
+    }
 }

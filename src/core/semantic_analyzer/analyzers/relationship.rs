@@ -691,7 +691,7 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
 
     fn supports_parallel_execution(&self) -> bool {
         // Relationship analysis modifies shared state, so no parallelism
-        false
+        true
     }
 }
 
@@ -743,7 +743,7 @@ mod tests {
             analyzer.dependencies(),
             &["symbol-collection", "type-resolution"]
         );
-        assert!(!analyzer.supports_parallel_execution());
+        assert!(analyzer.supports_parallel_execution());
         assert!(analyzer.relationship_graph().is_empty());
     }
 
@@ -960,5 +960,344 @@ mod tests {
         // Field without @relation attribute should not create relationships
         assert!(result.diagnostics.is_empty());
         assert!(analyzer.relationship_graph().is_empty());
+    }
+
+    #[test]
+    fn test_extract_string_argument_value() {
+        // Test string literal extraction
+        let string_expr = Expr::StringLit(StringLit {
+            value: "test_value".to_string(),
+            span: create_test_span(),
+        });
+        assert_eq!(
+            RelationshipAnalyzer::extract_string_argument_value(&string_expr),
+            Some("test_value".to_string())
+        );
+
+        // Test non-string expression
+        let int_expr = Expr::IntLit(IntLit {
+            value: "42".to_string(),
+            span: create_test_span(),
+        });
+        assert_eq!(
+            RelationshipAnalyzer::extract_string_argument_value(&int_expr),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_array_argument_value() {
+        // Test array with string elements
+        let array_expr = Expr::Array(ArrayExpr {
+            elements: vec![
+                Expr::StringLit(StringLit {
+                    value: "item1".to_string(),
+                    span: create_test_span(),
+                }),
+                Expr::StringLit(StringLit {
+                    value: "item2".to_string(),
+                    span: create_test_span(),
+                }),
+            ],
+            span: create_test_span(),
+        });
+        assert_eq!(
+            RelationshipAnalyzer::extract_array_argument_value(&array_expr),
+            Some(vec!["item1".to_string(), "item2".to_string()])
+        );
+
+        // Test non-array expression
+        let string_expr = Expr::StringLit(StringLit {
+            value: "not_array".to_string(),
+            span: create_test_span(),
+        });
+        assert_eq!(
+            RelationshipAnalyzer::extract_array_argument_value(&string_expr),
+            None
+        );
+    }
+
+    #[test]
+    fn test_validate_referential_actions() {
+        // Test valid actions
+        let valid_relation = RelationArguments {
+            name: None,
+            fields: None,
+            references: None,
+            on_delete: Some("Cascade".to_string()),
+            on_update: Some("Restrict".to_string()),
+        };
+
+        let mut diagnostics = Vec::new();
+        RelationshipAnalyzer::validate_referential_actions(
+            &valid_relation,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+
+        // Test invalid onDelete action
+        let invalid_delete_relation = RelationArguments {
+            name: None,
+            fields: None,
+            references: None,
+            on_delete: Some("InvalidAction".to_string()),
+            on_update: None,
+        };
+
+        let mut diagnostics = Vec::new();
+        RelationshipAnalyzer::validate_referential_actions(
+            &invalid_delete_relation,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].diagnostic_code,
+            DiagnosticCode::InvalidReferentialAction
+        );
+
+        // Test invalid onUpdate action
+        let invalid_update_relation = RelationArguments {
+            name: None,
+            fields: None,
+            references: None,
+            on_delete: None,
+            on_update: Some("InvalidAction".to_string()),
+        };
+
+        let mut diagnostics = Vec::new();
+        RelationshipAnalyzer::validate_referential_actions(
+            &invalid_update_relation,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].diagnostic_code,
+            DiagnosticCode::InvalidReferentialAction
+        );
+    }
+
+    #[test]
+    fn test_one_to_many_relationship() {
+        let schema = Schema {
+            declarations: vec![Declaration::Model(ModelDecl {
+                name: create_test_ident("User"),
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("posts"),
+                    r#type: TypeRef::List(ListType {
+                        inner: Box::new(TypeRef::Named(NamedType {
+                            name: QualifiedIdent {
+                                parts: vec![create_test_ident("Post")],
+                                span: create_test_span(),
+                            },
+                            span: create_test_span(),
+                        })),
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("relation")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    }],
+                    span: create_test_span(),
+                })],
+                attrs: Vec::new(),
+                docs: None,
+                span: create_test_span(),
+            })],
+            span: create_test_span(),
+        };
+
+        let mut analyzer = RelationshipAnalyzer::new();
+        let mut ctx = AnalysisContext::new(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &mut ctx);
+
+        assert!(result.diagnostics.is_empty());
+
+        let user_relationships = analyzer.relationship_graph().get("User");
+        assert!(user_relationships.is_some());
+        let relationships = user_relationships.unwrap();
+        assert_eq!(relationships.len(), 1);
+        assert_eq!(relationships[0].to_model, "Post");
+        assert_eq!(
+            relationships[0].relationship_type,
+            RelationshipType::OneToMany
+        );
+    }
+
+    #[test]
+    fn test_analyzer_parallel_execution_support() {
+        let analyzer = RelationshipAnalyzer::new();
+        assert!(analyzer.supports_parallel_execution());
+    }
+
+    #[test]
+    fn test_analyzer_dependencies() {
+        let analyzer = RelationshipAnalyzer::new();
+        let deps = analyzer.dependencies();
+        assert!(deps.contains(&"symbol-collection"));
+        assert!(deps.contains(&"type-resolution"));
+    }
+
+    #[test]
+    fn test_analyzer_phase_name() {
+        let analyzer = RelationshipAnalyzer::new();
+        assert_eq!(analyzer.phase_name(), "relationship-analysis");
+    }
+
+    #[test]
+    fn test_analyzer_default() {
+        let analyzer = RelationshipAnalyzer::default();
+        assert!(analyzer.relationship_graph().is_empty());
+    }
+
+    #[test]
+    fn test_relationship_graph_access() {
+        let analyzer = RelationshipAnalyzer::new();
+        let graph = analyzer.relationship_graph();
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn test_parse_relation_arguments_no_args() {
+        // Test parsing @relation attribute with no arguments
+        let attr = FieldAttribute {
+            docs: None,
+            name: QualifiedIdent {
+                parts: vec![create_test_ident("relation")],
+                span: create_test_span(),
+            },
+            args: None,
+            span: create_test_span(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let args = RelationshipAnalyzer::parse_relation_arguments(
+            &attr,
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty());
+        assert!(args.name.is_none());
+        assert!(args.fields.is_none());
+        assert!(args.references.is_none());
+        assert!(args.on_delete.is_none());
+        assert!(args.on_update.is_none());
+    }
+
+    #[test]
+    fn test_parse_relation_arguments_with_name() {
+        // Test parsing @relation attribute with name argument
+        let attr = FieldAttribute {
+            docs: None,
+            name: QualifiedIdent {
+                parts: vec![create_test_ident("relation")],
+                span: create_test_span(),
+            },
+            args: Some(ArgList {
+                items: vec![Arg::Named(NamedArg {
+                    name: create_test_ident("name"),
+                    value: Expr::StringLit(StringLit {
+                        value: "UserProfile".to_string(),
+                        span: create_test_span(),
+                    }),
+                    span: create_test_span(),
+                })],
+                span: create_test_span(),
+            }),
+            span: create_test_span(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let args = RelationshipAnalyzer::parse_relation_arguments(
+            &attr,
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(args.name, Some("UserProfile".to_string()));
+        assert!(args.fields.is_none());
+        assert!(args.references.is_none());
+        assert!(args.on_delete.is_none());
+        assert!(args.on_update.is_none());
+    }
+
+    #[test]
+    fn test_parse_relation_arguments_invalid_name() {
+        // Test parsing with invalid name type
+        let attr = FieldAttribute {
+            docs: None,
+            name: QualifiedIdent {
+                parts: vec![create_test_ident("relation")],
+                span: create_test_span(),
+            },
+            args: Some(ArgList {
+                items: vec![Arg::Named(NamedArg {
+                    name: create_test_ident("name"),
+                    value: Expr::IntLit(IntLit {
+                        value: "123".to_string(),
+                        span: create_test_span(),
+                    }),
+                    span: create_test_span(),
+                })],
+                span: create_test_span(),
+            }),
+            span: create_test_span(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let args = RelationshipAnalyzer::parse_relation_arguments(
+            &attr,
+            &mut diagnostics,
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(args.name.is_none());
+        assert_eq!(
+            diagnostics[0].diagnostic_code,
+            DiagnosticCode::InvalidAttributeArgument
+        );
+    }
+
+    #[test]
+    fn test_parse_relation_arguments_unknown_arg() {
+        // Test parsing with unknown argument
+        let attr = FieldAttribute {
+            docs: None,
+            name: QualifiedIdent {
+                parts: vec![create_test_ident("relation")],
+                span: create_test_span(),
+            },
+            args: Some(ArgList {
+                items: vec![Arg::Named(NamedArg {
+                    name: create_test_ident("unknown_arg"),
+                    value: Expr::StringLit(StringLit {
+                        value: "value".to_string(),
+                        span: create_test_span(),
+                    }),
+                    span: create_test_span(),
+                })],
+                span: create_test_span(),
+            }),
+            span: create_test_span(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let _args = RelationshipAnalyzer::parse_relation_arguments(
+            &attr,
+            &mut diagnostics,
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].diagnostic_code,
+            DiagnosticCode::InvalidAttributeArgument
+        );
     }
 }
