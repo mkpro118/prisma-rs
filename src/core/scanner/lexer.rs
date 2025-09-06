@@ -1,36 +1,53 @@
-//! Lexer interfaces and default implementations.
+//! Tokenize input text into a stream of tokens.
 //!
-//! This module defines the `CharacterStream` navigation trait, token recognizers,
-//! the `Lexer` that produces `Token`s, and an iterator adapter.
+//! Input is read through a `CharacterStream` abstraction. The lexer delegates
+//! token boundaries to an ordered set of `TokenRecognizer`s; the first
+//! recognizer that can handle the current input wins. `Lexer` drives the
+//! process and yields `Token`s with spans. For ergonomic use there is an
+//! iterator adapter via `Lexer::tokenize`.
 //!
-//! # Overview
-//! - `CharacterStream`: navigation over character input with position tracking.
-//! - `TokenRecognizer`: pluggable token recognition units.
-//! - `Lexer`: drives recognition and returns `Token`s with spans.
-//! - `LexerIterator`: iterator over `Result<Token, LexError>`.
+//! Positions are 1-based (line, column) as reported by the active stream.
+//! The lexer skips Unicode whitespace, coalesces consecutive single-line
+//! comments and doc comments, and emits a single `EOF` token when input is
+//! consumed. Recognizer order is significant and should be chosen to avoid
+//! ambiguity.
 //!
-//! # Coordinates
-//! Line and column are 1-based. Offsets are measured in character indices as
-//! reported by the active `CharacterStream` implementation.
+//! ## Examples
+//! ```
+//! # use prisma_rs::core::scanner::{Lexer, TokenType};
+//! let toks: Result<Vec<_>, _> = Lexer::tokenize("model A {}").collect();
+//! let toks = toks.expect("scan ok");
+//! assert!(matches!(*toks.last().unwrap().r#type(), TokenType::EOF));
+//! ```
+
+use std::fmt;
 
 use crate::core::scanner::tokens::{
     SymbolLocation, SymbolSpan, Token, TokenType,
 };
-use std::fmt;
 
-/// Position within input.
+/// Track the lexer's current location in the input.
 ///
-/// Carries 1-based line/column and a character offset as defined by the active
-/// `CharacterStream`.
+/// Stores 1-based `line` and `column` and a stream-defined `offset`. Offsets
+/// advance by characters as seen by the active stream.
+///
+/// ## Examples
+/// ```
+/// # use prisma_rs::core::scanner::Position;
+/// let p = Position::new(1, 1, 0);
+/// assert_eq!(p.line, 1);
+/// assert_eq!(p.column, 1);
+/// assert_eq!(p.offset, 0);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Position {
-    line: u32,
-    column: u32,
-    offset: usize,
+    pub line: u32,
+    pub column: u32,
+    pub offset: usize,
 }
 
 impl Position {
-    /// Creates a new position.
+    /// Create a new position with explicit line, column, and offset.
     #[must_use]
     pub fn new(line: u32, column: u32, offset: usize) -> Self {
         Self {
@@ -40,25 +57,7 @@ impl Position {
         }
     }
 
-    /// Returns the 1-based line.
-    #[must_use]
-    pub fn line(&self) -> u32 {
-        self.line
-    }
-
-    /// Returns the 1-based column.
-    #[must_use]
-    pub fn column(&self) -> u32 {
-        self.column
-    }
-
-    /// Returns the character offset as defined by the stream.
-    #[must_use]
-    pub fn offset(&self) -> usize {
-        self.offset
-    }
-
-    /// Converts to a token `SymbolLocation` (line/column only).
+    /// Convert to a token `SymbolLocation` (line and column only).
     #[must_use]
     pub fn to_symbol_location(&self) -> SymbolLocation {
         SymbolLocation {
@@ -68,7 +67,20 @@ impl Position {
     }
 }
 
-/// Lexical error with message and source span.
+/// Describe a lexical error with a diagnostic span.
+///
+/// Carries a user-displayable message and the `SymbolSpan` where it occurred.
+///
+/// ## Examples
+/// ```
+/// # use prisma_rs::core::scanner::{LexError, SymbolLocation, SymbolSpan};
+/// let span = SymbolSpan {
+///     start: SymbolLocation { line: 1, column: 1 },
+///     end: SymbolLocation { line: 1, column: 1 },
+/// };
+/// let err = LexError::new("oops".into(), span);
+/// assert!(err.message().contains("oops"));
+/// ```
 #[derive(Debug, Clone)]
 pub struct LexError {
     message: String,
@@ -103,10 +115,46 @@ impl fmt::Display for LexError {
 
 impl std::error::Error for LexError {}
 
-/// Character navigation with position tracking.
+/// Navigate characters with position tracking.
 ///
-/// A `CharacterStream` exposes read/peek/advance operations and reports
-/// positions as `Position`.
+/// Implementors expose read, peek, and advance operations and report
+/// positions as `Position`. `peek(0)` is equivalent to `current()`. Implementations
+/// must be consistent: `advance()` should return the same char that `current()`
+/// produced immediately before.
+///
+/// ## Examples
+/// ```
+/// # use prisma_rs::core::scanner::{CharacterStream, Position};
+/// #[derive(Debug)]
+/// struct SliceStream<'a> {
+///     s: &'a [u8],
+///     i: usize,
+///     line: u32,
+///     col: u32,
+/// }
+/// impl<'a> CharacterStream for SliceStream<'a> {
+///     fn current(&self) -> Option<char> {
+///         self.s.get(self.i).copied().map(|b| b as char)
+///     }
+///     fn advance(&mut self) -> Option<char> {
+///         let ch = self.current()?;
+///         self.i += 1;
+///         self.col += 1;
+///         Some(ch)
+///     }
+///     fn peek(&self, o: usize) -> Option<char> {
+///         self.s.get(self.i + o).copied().map(|b| b as char)
+///     }
+///     fn position(&self) -> Position {
+///         Position::new(self.line, self.col, self.i)
+///     }
+///     fn skip_whitespace(&mut self) {
+///         while self.current().is_some_and(|c| c.is_whitespace()) {
+///             self.advance();
+///         }
+///     }
+/// }
+/// ```
 pub trait CharacterStream: std::fmt::Debug {
     /// Returns the current character without advancing,
     /// or `None` at end of input.
@@ -131,10 +179,20 @@ pub trait CharacterStream: std::fmt::Debug {
     fn skip_whitespace(&mut self);
 }
 
-/// `CharacterStream` over a UTF-8 `&str`.
+/// Provide a `CharacterStream` over a UTF-8 `&str`.
 ///
-/// Positions use 1-based line/column. Offsets correspond to character indices
-/// in the internal sequence.
+/// Tracks newlines and columns as Unicode scalar values are advanced. Offsets
+/// index an internal `Vec<char>` captured at creation time.
+///
+/// ## Examples
+/// ```
+/// # use prisma_rs::core::scanner::{CharacterStream, StringCharacterStream};
+/// let mut s = StringCharacterStream::new("a\nb");
+/// assert_eq!(s.current(), Some('a'));
+/// s.advance(); // consume 'a'
+/// s.advance(); // consume newline '\n'
+/// assert_eq!(s.current(), Some('b'));
+/// ```
 #[derive(Debug)]
 pub struct StringCharacterStream {
     // Internal: pre-collected Unicode scalar values for random access.
@@ -200,20 +258,21 @@ impl CharacterStream for StringCharacterStream {
     }
 }
 
-/// Token recognition interface.
+/// Recognize a token at the current position.
 ///
-/// A `TokenRecognizer` decides whether it can parse a token at the current
-/// stream position and, if so, consumes the corresponding input to produce a `TokenType`.
+/// Implementations decide whether they can start a token (`can_handle`) and,
+/// if so, consume the input to produce a `TokenType`. `can_handle` must not
+/// advance the stream; `consume` must advance exactly the characters that
+/// form the token.
 ///
-/// # Errors
+/// ## Errors
 /// `consume` returns `LexError` if input is invalid for the recognizer or
 /// ends prematurely.
 ///
-/// # Examples
+/// ## Examples
 ///
 /// ```rust
-/// # use prisma_rs::core::scanner::lexer::*;
-/// # use prisma_rs::core::scanner::tokens::TokenType;
+/// # use prisma_rs::core::scanner::*;
 ///
 /// #[derive(Debug)]
 /// struct MyCustomRecognizer;
@@ -224,7 +283,10 @@ impl CharacterStream for StringCharacterStream {
 ///         input.current() == Some('#')
 ///     }
 ///
-///     fn consume(&self, input: &mut dyn CharacterStream) -> Result<TokenType, LexError> {
+///     fn consume(
+///         &self,
+///         input: &mut dyn CharacterStream,
+///     ) -> Result<TokenType, LexError> {
 ///         // Parse the token and advance the input stream
 ///         input.advance(); // consume '#'
 ///         Ok(TokenType::Unsupported("#".to_string()))
@@ -248,20 +310,26 @@ pub trait TokenRecognizer: std::fmt::Debug {
     ) -> Result<TokenType, LexError>;
 }
 
-/// Lexical analyzer that produces `Token`s from character input.
+/// Drive tokenization using a character stream and recognizers.
 ///
-/// Uses a `CharacterStream` for navigation and a sequence of `TokenRecognizer`s
-/// to classify input into `TokenType`s.
+/// The lexer consults recognizers in order; the first that can handle the
+/// input produces the next token. It coalesces consecutive comments and skips
+/// whitespace between tokens.
 #[derive(Debug)]
 pub struct Lexer {
     // Input stream.
     scanner: Box<dyn CharacterStream>,
     // Recognizers checked in order.
     recognizers: Vec<Box<dyn TokenRecognizer>>,
+    // Queue of tokens ready to be emitted (for comment coalescing)
+    token_queue: std::collections::VecDeque<Token>,
+    // Buffer for comment coalescing: stores the last comment token of each type
+    last_comment: Option<Token>,
+    last_doc_comment: Option<Token>,
 }
 
 impl Lexer {
-    /// Creates a lexer from a stream and recognizer list.
+    /// Create a lexer from a stream and recognizer list.
     #[must_use]
     pub fn new(
         scanner: Box<dyn CharacterStream>,
@@ -270,10 +338,13 @@ impl Lexer {
         Self {
             scanner,
             recognizers,
+            token_queue: std::collections::VecDeque::new(),
+            last_comment: None,
+            last_doc_comment: None,
         }
     }
 
-    /// Creates a lexer for `input` with the default recognizers.
+    /// Create a lexer for `input` with the default recognizers.
     #[must_use]
     pub fn default_for_input(input: &str) -> Self {
         let scanner = Box::new(StringCharacterStream::new(input));
@@ -281,84 +352,133 @@ impl Lexer {
         Self::new(scanner, recognizers)
     }
 
-    /// Parses and returns the next token.
+    /// Parse and return the next token.
     ///
-    /// Leading whitespace is skipped. When the end of input is reached, an
-    /// `EOF` token is returned.
+    /// Leading whitespace is skipped. At end of input, a single `EOF` token
+    /// is returned.
     ///
-    /// # Returns
-    /// - `Ok(Some(token))` if a token was produced.
-    /// - `Ok(None)` if iteration finished without producing `EOF`.
-    /// - `Err(LexError)` on invalid input.
-    ///
-    /// # Errors
-    /// Returns `LexError` when:
-    /// - An unrecognized character is encountered.
-    /// - Input ends unexpectedly while determining a fallback token.
+    /// ## Errors
+    /// Returns `LexError` for unrecognized characters or unterminated strings.
     pub fn next_token(&mut self) -> Result<Option<Token>, LexError> {
-        self.scanner.skip_whitespace();
-
-        let start_pos = self.scanner.position();
-
-        if self.scanner.current().is_none() {
-            let pos = start_pos.to_symbol_location();
-            return Ok(Some(Token::new(
-                TokenType::EOF,
-                (pos.line, pos.column),
-                (pos.line, pos.column),
-            )));
+        // First check if we have queued tokens to emit
+        if let Some(token) = self.token_queue.pop_front() {
+            return Ok(Some(token));
         }
 
-        for recognizer in &self.recognizers {
-            if recognizer.can_handle(self.scanner.as_ref()) {
-                let token_type = recognizer.consume(self.scanner.as_mut())?;
+        // Main tokenization loop with comment coalescing
+        loop {
+            self.scanner.skip_whitespace();
+            let start_pos = self.scanner.position();
+
+            if self.scanner.current().is_none() {
+                // End of input - flush any buffered comments first, then EOF
+                self.flush_buffered_comments();
+
+                if let Some(token) = self.token_queue.pop_front() {
+                    return Ok(Some(token));
+                }
+
+                let pos = start_pos.to_symbol_location();
+                return Ok(Some(Token::new(
+                    TokenType::EOF,
+                    (pos.line, pos.column),
+                    (pos.line, pos.column),
+                )));
+            }
+
+            // Try to recognize a token
+            let mut token_opt: Option<Token> = None;
+            for recognizer in &self.recognizers {
+                if recognizer.can_handle(self.scanner.as_ref()) {
+                    let token_type =
+                        recognizer.consume(self.scanner.as_mut())?;
+                    let end_pos = self.scanner.position();
+                    let start_loc = start_pos.to_symbol_location();
+                    let end_loc = end_pos.to_symbol_location();
+                    token_opt = Some(Token::new(
+                        token_type,
+                        (start_loc.line, start_loc.column),
+                        (end_loc.line, end_loc.column),
+                    ));
+                    break;
+                }
+            }
+
+            let Some(token) = token_opt else {
+                // Unrecognized character - error
                 let end_pos = self.scanner.position();
                 let start_loc = start_pos.to_symbol_location();
                 let end_loc = end_pos.to_symbol_location();
-                return Ok(Some(Token::new(
-                    token_type,
-                    (start_loc.line, start_loc.column),
-                    (end_loc.line, end_loc.column),
-                )));
+                let span = SymbolSpan {
+                    start: start_loc,
+                    end: end_loc,
+                };
+
+                return match self.scanner.current() {
+                    Some(ch) => {
+                        // Consume the offending character and report it.
+                        self.scanner.advance();
+                        Err(LexError::new(
+                            format!("Unexpected character: '{ch}'"),
+                            span,
+                        ))
+                    }
+                    None => {
+                        // Input ended between checks; report as unexpected end.
+                        Err(LexError::new(
+                            "Unexpected end of input".to_string(),
+                            span,
+                        ))
+                    }
+                };
+            };
+
+            // Handle comment coalescing
+            match token.r#type() {
+                TokenType::Comment(_) => {
+                    // Replace any existing buffered comment (coalescing consecutive comments)
+                    self.last_comment = Some(token);
+                    // Continue to next token
+                }
+                TokenType::DocComment(_) => {
+                    // Replace any existing buffered doc comment (coalescing consecutive doc comments)
+                    self.last_doc_comment = Some(token);
+                    // Continue to next token
+                }
+                _ => {
+                    // Non-comment token found - flush buffered comments and queue this token
+                    self.flush_buffered_comments();
+                    self.token_queue.push_back(token);
+
+                    // Return the first token from the queue
+                    return Ok(self.token_queue.pop_front());
+                }
             }
         }
+    }
 
-        let end_pos = self.scanner.position();
-        let start_loc = start_pos.to_symbol_location();
-        let end_loc = end_pos.to_symbol_location();
-        let span = SymbolSpan {
-            start: start_loc,
-            end: end_loc,
-        };
-
-        match self.scanner.current() {
-            Some(ch) => {
-                // Consume the offending character and report it.
-                self.scanner.advance();
-                Err(LexError::new(
-                    format!("Unexpected character: '{ch}'"),
-                    span,
-                ))
-            }
-            None => {
-                // Input ended between checks; report as unexpected end.
-                Err(LexError::new("Unexpected end of input".to_string(), span))
-            }
+    /// Flush buffered comments to the token queue.
+    fn flush_buffered_comments(&mut self) {
+        if let Some(comment) = self.last_comment.take() {
+            self.token_queue.push_back(comment);
+        }
+        if let Some(doc_comment) = self.last_doc_comment.take() {
+            self.token_queue.push_back(doc_comment);
         }
     }
 }
 
-/// Returns the default recognizers in priority order.
+/// Return the default recognizers in priority order.
 ///
-/// Recognizers earlier in the vector take precedence.
+/// Earlier recognizers take precedence when multiple match.
 ///
-/// Order:
-/// 1. Keywords
-/// 2. Punctuation
-/// 3. String literals
-/// 4. Number literals
-/// 5. Comments
-/// 6. Identifiers
+/// ## Examples
+/// ```
+/// # use prisma_rs::core::scanner::{default_recognizers, CharacterStream, TokenRecognizer, StringCharacterStream};
+/// let recs = default_recognizers();
+/// assert!(!recs.is_empty());
+/// assert!(recs[0].can_handle(&StringCharacterStream::new("model")));
+/// ```
 #[must_use]
 pub fn default_recognizers() -> Vec<Box<dyn TokenRecognizer>> {
     vec![
@@ -371,11 +491,9 @@ pub fn default_recognizers() -> Vec<Box<dyn TokenRecognizer>> {
     ]
 }
 
-/// Recognizes Prisma keywords and built-in scalar types.
+/// Recognize Prisma keywords and built-in scalar types.
 ///
-/// Matches reserved words such as `model`, `enum`, `datasource`, `generator`,
-/// and scalar types like `String`, `Int`, `Float`, etc. Keywords are preferred
-/// over identifiers.
+/// Keywords take precedence over identifiers when both could match.
 #[derive(Debug)]
 pub struct KeywordRecognizer {
     // Map from keyword text to token type.
@@ -389,7 +507,7 @@ impl Default for KeywordRecognizer {
 }
 
 impl KeywordRecognizer {
-    /// Creates a keyword recognizer with the built-in set.
+    /// Create a keyword recognizer with the built-in set.
     #[must_use]
     pub fn new() -> Self {
         let mut keywords = std::collections::HashMap::new();
@@ -409,29 +527,7 @@ impl KeywordRecognizer {
 
         Self { keywords }
     }
-}
 
-impl TokenRecognizer for KeywordRecognizer {
-    fn can_handle(&self, input: &dyn CharacterStream) -> bool {
-        if let Some(ch) = input.current()
-            && (ch.is_alphabetic() || ch == '_')
-        {
-            let word = Self::peek_identifier(input);
-            return self.keywords.contains_key(word.as_str());
-        }
-        false
-    }
-
-    fn consume(
-        &self,
-        input: &mut dyn CharacterStream,
-    ) -> Result<TokenType, LexError> {
-        let word = Self::consume_identifier(input);
-        Ok(self.keywords[word.as_str()].clone())
-    }
-}
-
-impl KeywordRecognizer {
     fn peek_identifier(input: &dyn CharacterStream) -> String {
         let mut word = String::new();
         let mut offset = 0;
@@ -462,10 +558,29 @@ impl KeywordRecognizer {
     }
 }
 
-/// Recognizes punctuation and operators.
+impl TokenRecognizer for KeywordRecognizer {
+    fn can_handle(&self, input: &dyn CharacterStream) -> bool {
+        if let Some(ch) = input.current()
+            && (ch.is_alphabetic() || ch == '_')
+        {
+            let word = Self::peek_identifier(input);
+            return self.keywords.contains_key(word.as_str());
+        }
+        false
+    }
+
+    fn consume(
+        &self,
+        input: &mut dyn CharacterStream,
+    ) -> Result<TokenType, LexError> {
+        let word = Self::consume_identifier(input);
+        Ok(self.keywords[word.as_str()].clone())
+    }
+}
+
+/// Recognize punctuation and operators.
 ///
-/// Maps single-character tokens such as `{`, `}`, `(`, `)`, `[`, `]`, `,`, `:`,
-/// `.`, `=`, `?`, `@`, and the multi-character forms `@@` and `[]` (list marker).
+/// Handles single-character tokens and the multi-character `@@` and `[]`.
 #[derive(Debug)]
 pub struct PunctuationRecognizer;
 
@@ -476,7 +591,7 @@ impl Default for PunctuationRecognizer {
 }
 
 impl PunctuationRecognizer {
-    /// Creates a punctuation recognizer.
+    /// Create a punctuation recognizer.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -563,16 +678,15 @@ impl TokenRecognizer for PunctuationRecognizer {
     }
 }
 
-/// Recognizes double-quoted string literals.
+/// Recognize double-quoted string literals.
 ///
-/// The resulting `TokenType::Literal` contains the string contents without the
-/// surrounding quotes. A closing quote is treated as escaped if preceded by an
-/// odd number of backslashes in the content accumulated so far.
+/// The returned `Literal` contains the content without surrounding quotes. A
+/// quote is treated as escaped when preceded by an odd number of backslashes.
 ///
-/// # Errors
+/// ## Errors
 /// Returns `LexError` if the string is not terminated before end of input.
 ///
-/// # Examples
+/// ## Examples
 /// - `"abc"` -> `Literal("abc")`
 /// - `"a\"b"` -> `Literal("a\\\"b")`
 #[derive(Debug)]
@@ -639,14 +753,11 @@ impl TokenRecognizer for StringLiteralRecognizer {
     }
 }
 
-/// Recognizes decimal numbers with optional sign, fraction, and exponent.
+/// Recognize decimal numbers with optional sign, fraction, and exponent.
 ///
-/// Grammar (informal):
-/// - `-? [0-9]+ ( \. [0-9]+ )? ( [eE] [+-]? [0-9]+ )?`
+/// Produces `Literal` with the matched numeric text (no normalization).
 ///
-/// The resulting token is `TokenType::Literal` containing the matched text.
-///
-/// # Examples
+/// ## Examples
 /// - `42`
 /// - `-3.14`
 /// - `6.022e23`
@@ -660,7 +771,7 @@ impl Default for NumberLiteralRecognizer {
 }
 
 impl NumberLiteralRecognizer {
-    /// Creates a number literal recognizer.
+    /// Create a number literal recognizer.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -728,10 +839,10 @@ impl TokenRecognizer for NumberLiteralRecognizer {
     }
 }
 
-/// Recognizes single-line comments `//...` and doc comments `///...`.
+/// Recognize single-line comments `//...` and doc comments `///...`.
 ///
-/// Returns `TokenType::Comment` or `TokenType::DocComment` with the content
-/// (excluding the leading slashes and trailing newline).
+/// Returns `Comment` or `DocComment` with content excluding leading slashes
+/// and the trailing newline.
 #[derive(Debug)]
 pub struct CommentRecognizer;
 
@@ -742,7 +853,7 @@ impl Default for CommentRecognizer {
 }
 
 impl CommentRecognizer {
-    /// Creates a comment recognizer.
+    /// Create a comment recognizer.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -783,10 +894,10 @@ impl TokenRecognizer for CommentRecognizer {
     }
 }
 
-/// Recognizes identifiers and boolean literals.
+/// Recognize identifiers and boolean/null literals.
 ///
-/// Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The strings `true` and `false`
-/// are emitted as `TokenType::Literal`.
+/// Identifiers match `[A-Za-z_][A-Za-z0-9_]*` (ASCII only). `true`, `false`,
+/// and `null` are emitted as `Literal`.
 #[derive(Debug)]
 pub struct IdentifierRecognizer;
 
@@ -797,7 +908,7 @@ impl Default for IdentifierRecognizer {
 }
 
 impl IdentifierRecognizer {
-    /// Creates an identifier recognizer.
+    /// Create an identifier recognizer.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -807,7 +918,7 @@ impl IdentifierRecognizer {
 impl TokenRecognizer for IdentifierRecognizer {
     fn can_handle(&self, input: &dyn CharacterStream) -> bool {
         if let Some(ch) = input.current() {
-            ch.is_alphabetic() || ch == '_'
+            ch.is_alphabetic()
         } else {
             false
         }
@@ -833,6 +944,19 @@ impl TokenRecognizer for IdentifierRecognizer {
                     span,
                 ));
             }
+
+            if identifier.is_empty() && ch == '_' {
+                let pos = input.position().to_symbol_location();
+                let span = SymbolSpan {
+                    start: pos.clone(),
+                    end: pos,
+                };
+                return Err(LexError::new(
+                    "Default parser does not support identifiers starting with underscore".to_owned(),
+                    span,
+                ));
+            }
+
             if ch.is_alphanumeric() || ch == '_' {
                 identifier.push(ch);
                 input.advance();
@@ -841,7 +965,8 @@ impl TokenRecognizer for IdentifierRecognizer {
             }
         }
 
-        if identifier == "true" || identifier == "false" {
+        if identifier == "true" || identifier == "false" || identifier == "null"
+        {
             Ok(TokenType::Literal(identifier))
         } else {
             Ok(TokenType::Identifier(identifier))
@@ -849,16 +974,16 @@ impl TokenRecognizer for IdentifierRecognizer {
     }
 }
 
-/// Iterator over tokens produced by a `Lexer`.
+/// Iterate over tokens produced by a `Lexer`.
 ///
-/// Yields `Result<Token, LexError>`. Terminates after yielding `EOF` or an error.
+/// Yields `Result<Token, LexError>` and terminates after `EOF` or an error.
 pub struct LexerIterator {
     lexer: Lexer,
     finished: bool,
 }
 
 impl LexerIterator {
-    /// Creates an iterator from a lexer.
+    /// Create an iterator from a lexer.
     #[must_use]
     pub fn new(lexer: Lexer) -> Self {
         Self {
@@ -893,11 +1018,11 @@ impl Iterator for LexerIterator {
 }
 
 impl Lexer {
-    /// Returns an iterator that tokenizes `input` using the default recognizers.
+    /// Return an iterator that tokenizes `input`.
     ///
-    /// # Examples
+    /// Examples:
     /// ```
-    /// # use prisma_rs::core::scanner::lexer::Lexer;
+    /// # use prisma_rs::core::scanner::Lexer;
     /// let mut it = Lexer::tokenize("model A {}");
     /// while let Some(res) = it.next() {
     ///     let _tok = res?;
@@ -913,21 +1038,20 @@ impl Lexer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
     use super::*;
 
     #[test]
-    fn test_character_stream_basic_operations() {
+    fn character_stream_basic_operations() {
         let mut stream = StringCharacterStream::new("hello");
 
         assert_eq!(stream.current(), Some('h'));
-        assert_eq!(stream.position().line(), 1);
-        assert_eq!(stream.position().column(), 1);
-        assert_eq!(stream.position().offset(), 0);
+        assert_eq!(stream.position().line, 1);
+        assert_eq!(stream.position().column, 1);
+        assert_eq!(stream.position().offset, 0);
 
         assert_eq!(stream.advance(), Some('h'));
         assert_eq!(stream.current(), Some('e'));
-        assert_eq!(stream.position().column(), 2);
+        assert_eq!(stream.position().column, 2);
 
         assert_eq!(stream.peek(0), Some('e'));
         assert_eq!(stream.peek(1), Some('l'));
@@ -935,13 +1059,13 @@ mod tests {
     }
 
     #[test]
-    fn test_character_stream_line_tracking() {
+    fn character_stream_line_tracking() {
         let mut stream = StringCharacterStream::new("hello\nworld");
 
         // Advance to 'h'
         stream.advance();
-        assert_eq!(stream.position().line(), 1);
-        assert_eq!(stream.position().column(), 2);
+        assert_eq!(stream.position().line, 1);
+        assert_eq!(stream.position().column, 2);
 
         // Advance to '\n'
         for _ in 0..4 {
@@ -951,23 +1075,23 @@ mod tests {
 
         // Advance past '\n'
         stream.advance();
-        assert_eq!(stream.position().line(), 2);
-        assert_eq!(stream.position().column(), 1);
+        assert_eq!(stream.position().line, 2);
+        assert_eq!(stream.position().column, 1);
         assert_eq!(stream.current(), Some('w'));
     }
 
     #[test]
-    fn test_character_stream_skip_whitespace() {
+    fn character_stream_skip_whitespace() {
         let mut stream = StringCharacterStream::new("   \t\n  hello");
 
         stream.skip_whitespace();
         assert_eq!(stream.current(), Some('h'));
-        assert_eq!(stream.position().line(), 2);
-        assert_eq!(stream.position().column(), 3);
+        assert_eq!(stream.position().line, 2);
+        assert_eq!(stream.position().column, 3);
     }
 
     #[test]
-    fn test_keyword_recognizer() {
+    fn keyword_recognizer() {
         let recognizer = KeywordRecognizer::new();
         let mut stream = StringCharacterStream::new("model User");
 
@@ -978,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn test_keyword_recognizer_not_keyword() {
+    fn keyword_recognizer_not_keyword() {
         let recognizer = KeywordRecognizer::new();
         let stream = StringCharacterStream::new("myModel");
 
@@ -986,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn test_punctuation_recognizer() {
+    fn punctuation_recognizer() {
         let recognizer = PunctuationRecognizer::new();
         let mut stream = StringCharacterStream::new("@");
 
@@ -997,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn test_punctuation_recognizer_double_at() {
+    fn punctuation_recognizer_double_at() {
         let recognizer = PunctuationRecognizer::new();
         let mut stream = StringCharacterStream::new("@@id");
 
@@ -1008,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_punctuation_recognizer_array_brackets() {
+    fn punctuation_recognizer_array_brackets() {
         let recognizer = PunctuationRecognizer::new();
         let mut stream = StringCharacterStream::new("[]");
 
@@ -1019,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_string_literal_recognizer() {
+    fn string_literal_recognizer() {
         let recognizer = StringLiteralRecognizer::new();
         let mut stream = StringCharacterStream::new("\"hello world\"");
 
@@ -1030,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn test_string_literal_recognizer_with_escape() {
+    fn string_literal_recognizer_with_escape() {
         let recognizer = StringLiteralRecognizer::new();
         let mut stream = StringCharacterStream::new("\"hello \\\"world\\\"\"");
 
@@ -1043,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn test_string_literal_recognizer_unterminated() {
+    fn string_literal_recognizer_unterminated() {
         let recognizer = StringLiteralRecognizer::new();
         let mut stream = StringCharacterStream::new("\"unterminated");
 
@@ -1057,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn test_number_literal_recognizer() {
+    fn number_literal_recognizer() {
         let recognizer = NumberLiteralRecognizer::new();
 
         // Test integer
@@ -1086,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_comment_recognizer() {
+    fn comment_recognizer() {
         let recognizer = CommentRecognizer::new();
 
         // Test regular comment
@@ -1107,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn test_identifier_recognizer() {
+    fn identifier_recognizer() {
         let recognizer = IdentifierRecognizer::new();
 
         // Test regular identifier
@@ -1125,10 +1249,14 @@ mod tests {
         let mut stream = StringCharacterStream::new("false");
         let token = recognizer.consume(&mut stream).unwrap();
         assert_eq!(token, TokenType::Literal("false".to_string()));
+
+        let mut stream = StringCharacterStream::new("null");
+        let token = recognizer.consume(&mut stream).unwrap();
+        assert_eq!(token, TokenType::Literal("null".to_string()));
     }
 
     #[test]
-    fn test_lexer_integration() {
+    fn lexer_integration() {
         let mut lexer = Lexer::default_for_input("model User { id Int @id }");
 
         let token1 = lexer.next_token().unwrap().unwrap();
@@ -1160,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexer_iterator() {
+    fn lexer_iterator() {
         let iter = Lexer::tokenize("@id");
         let tokens: Result<Vec<Token>, LexError> = iter.collect();
         let tokens = tokens.unwrap();
@@ -1175,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_handling() {
+    fn error_handling() {
         let mut lexer = Lexer::default_for_input("$invalid");
         let result = lexer.next_token();
         assert!(result.is_err());
@@ -1185,21 +1313,21 @@ mod tests {
 
     // Edge Cases and Complex Scenarios
     #[test]
-    fn test_empty_input() {
+    fn empty_input() {
         let mut lexer = Lexer::default_for_input("");
         let token = lexer.next_token().unwrap().unwrap();
         assert_eq!(*token.r#type(), TokenType::EOF);
     }
 
     #[test]
-    fn test_whitespace_only() {
+    fn whitespace_only() {
         let mut lexer = Lexer::default_for_input("   \t\n   ");
         let token = lexer.next_token().unwrap().unwrap();
         assert_eq!(*token.r#type(), TokenType::EOF);
     }
 
     #[test]
-    fn test_unicode_characters() {
+    fn unicode_characters() {
         let mut lexer = Lexer::default_for_input("non_asciî");
         assert!(lexer.next_token().is_err());
         assert!(
@@ -1210,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn test_number_edge_cases() {
+    fn number_edge_cases() {
         let test_cases = vec![
             ("0", "0"),
             ("-0", "-0"),
@@ -1236,7 +1364,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_numbers() {
+    fn invalid_numbers() {
         let invalid_cases = vec!["1.2.3", "1e", "1e+", "1e-", "1."];
 
         for case in invalid_cases {
@@ -1261,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_string_edge_cases() {
+    fn string_edge_cases() {
         let test_cases = vec![
             ("\"\"", ""),
             ("\"hello\"", "hello"),
@@ -1284,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_string_escapes() {
+    fn complex_string_escapes() {
         let input = r#""She said \"Hello, \"World\"!\" to me.""#;
         let mut lexer = Lexer::default_for_input(input);
         let token = lexer.next_token().unwrap().unwrap();
@@ -1297,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_comment_variations() {
+    fn comment_variations() {
         let test_cases = vec![
             ("//", TokenType::Comment(String::new())),
             ("// comment", TokenType::Comment(" comment".to_string())),
@@ -1322,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_punctuation_sequences() {
+    fn punctuation_sequences() {
         let input = "(){}[],.@@@?=:";
         let mut lexer = Lexer::default_for_input(input);
 
@@ -1348,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn test_separate_brackets() {
+    fn separate_brackets() {
         let input = "[ ]"; // Separate brackets with space
         let mut lexer = Lexer::default_for_input(input);
 
@@ -1360,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_prisma_schema() {
+    fn complex_prisma_schema() {
         let schema = r#"
         // Database configuration
         datasource db {
@@ -1421,7 +1549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_line_endings() {
+    fn mixed_line_endings() {
         let input = "model\rUser\n{\r\nid Int\n}";
         let tokens: Result<Vec<_>, _> = Lexer::tokenize(input).collect();
         let tokens = tokens.unwrap();
@@ -1443,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_identifier_edge_cases() {
+    fn identifier_edge_cases() {
         let test_cases = vec![
             ("a", TokenType::Identifier("a".to_string())),
             ("A", TokenType::Identifier("A".to_string())),
@@ -1460,8 +1588,6 @@ mod tests {
                 "with123numbers",
                 TokenType::Identifier("with123numbers".to_string()),
             ),
-            ("_", TokenType::Identifier("_".to_string())),
-            ("__private", TokenType::Identifier("__private".to_string())),
             ("true", TokenType::Literal("true".to_string())),
             ("false", TokenType::Literal("false".to_string())),
         ];
@@ -1471,10 +1597,18 @@ mod tests {
             let token = lexer.next_token().unwrap().unwrap();
             assert_eq!(*token.r#type(), expected, "Failed for input: {input}");
         }
+
+        let test_cases = vec!["_", "__private"];
+
+        for input in test_cases {
+            let mut lexer = Lexer::default_for_input(input);
+            let token = lexer.next_token();
+            assert!(token.is_err());
+        }
     }
 
     #[test]
-    fn test_position_tracking_accuracy() {
+    fn position_tracking_accuracy() {
         let input = "model\n  User {\n    id Int\n  }";
         let mut lexer = Lexer::default_for_input(input);
 
@@ -1493,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_recovery() {
+    fn error_recovery() {
         let input = "model User { $invalid id Int }";
         let mut lexer = Lexer::default_for_input(input);
 
@@ -1513,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn test_very_long_identifiers() {
+    fn very_long_identifiers() {
         let long_identifier = "a".repeat(1000);
         let mut lexer = Lexer::default_for_input(&long_identifier);
         let token = lexer.next_token().unwrap().unwrap();
@@ -1521,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deeply_nested_structures() {
+    fn deeply_nested_structures() {
         let input = "{{{{{{}}}}}}";
         let tokens: Result<Vec<_>, _> = Lexer::tokenize(input).collect();
         let tokens = tokens.unwrap();
