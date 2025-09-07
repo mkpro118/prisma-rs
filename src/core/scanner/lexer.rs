@@ -433,17 +433,35 @@ impl Lexer {
                 };
             };
 
+            macro_rules! coalesce_comments {
+                ($comment_type:ident, $comment_variants:ident) => {
+                    if let Some(ref mut last) = self.$comment_type {
+                        if let (
+                            TokenType::$comment_variants(prev),
+                            TokenType::$comment_variants(curr),
+                        ) = (last.r#type(), token.r#type())
+                        {
+                            // Combine the comment text
+                            let combined = format!("{}\n{}", prev, curr);
+                            *last = Token::new(
+                                TokenType::$comment_variants(combined),
+                                (&last.span().start).into(),
+                                (&token.span().end).into(),
+                            );
+                        }
+                    } else {
+                        self.$comment_type = Some(token);
+                    }
+                };
+            }
+
             // Handle comment coalescing
             match token.r#type() {
                 TokenType::Comment(_) => {
-                    // Replace any existing buffered comment (coalescing consecutive comments)
-                    self.last_comment = Some(token);
-                    // Continue to next token
+                    coalesce_comments!(last_comment, Comment);
                 }
                 TokenType::DocComment(_) => {
-                    // Replace any existing buffered doc comment (coalescing consecutive doc comments)
-                    self.last_doc_comment = Some(token);
-                    // Continue to next token
+                    coalesce_comments!(last_doc_comment, DocComment);
                 }
                 _ => {
                     // Non-comment token found - flush buffered comments and queue this token

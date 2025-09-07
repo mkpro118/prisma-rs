@@ -204,6 +204,12 @@ pub struct SymbolLocation {
     pub column: u32,
 }
 
+impl From<&SymbolLocation> for (u32, u32) {
+    fn from(value: &SymbolLocation) -> Self {
+        (value.line, value.column)
+    }
+}
+
 /// Record a half-open range covered by a token.
 ///
 /// Combine a start and end location. Only ordering is guaranteed.
