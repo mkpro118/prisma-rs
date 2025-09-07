@@ -151,6 +151,7 @@ impl RelationshipAnalyzer {
             relationship_type: Self::determine_relationship_type(field),
             foreign_keys: relation_info.fields.unwrap_or_default(),
             references: relation_info.references.unwrap_or_default(),
+            span: attr.span.clone(),
         };
 
         // Track as processed
@@ -375,10 +376,7 @@ impl RelationshipAnalyzer {
                         // which should have a back-reference
                         diagnostics.push(
                             SemanticDiagnostic::error(
-                                SymbolSpan {
-                                    start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                    end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                },
+                                relationship.span.clone(),
                                 format!(
                                     "Relationship from '{}' to '{}' is missing a back-reference in model '{}'",
                                     from_model, relationship.to_model, relationship.to_model
@@ -443,10 +441,7 @@ impl RelationshipAnalyzer {
                                 if has_overlapping_keys {
                                     diagnostics.push(
                                         SemanticDiagnostic::error(
-                                            SymbolSpan {
-                                                start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                                end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                            },
+                                            rel1.span.clone(),
                                             format!(
                                                 "Conflicting relationships from '{}' to '{}': fields '{}' and '{}' share foreign keys",
                                                 rel1.from_model, target_model, rel1.from_field, rel2.from_field
@@ -487,10 +482,7 @@ impl RelationshipAnalyzer {
                 {
                     diagnostics.push(
                             SemanticDiagnostic::error(
-                                SymbolSpan {
-                                    start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                    end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                },
+                                relationship.span.clone(),
                                 format!(
                                     "Relationship '{}' has mismatched foreign keys and references: {} fields vs {} references",
                                     relationship.id,
@@ -513,10 +505,7 @@ impl RelationshipAnalyzer {
                 {
                     diagnostics.push(
                             SemanticDiagnostic::error(
-                                SymbolSpan {
-                                    start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                    end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                },
+                                relationship.span.clone(),
                                 format!(
                                     "Many-to-one relationship '{}' requires foreign key fields to be specified",
                                     relationship.id
@@ -537,10 +526,7 @@ impl RelationshipAnalyzer {
                 {
                     diagnostics.push(
                             SemanticDiagnostic::warning(
-                                SymbolSpan {
-                                    start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                    end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                },
+                                relationship.span.clone(),
                                 format!(
                                     "One-to-many relationship '{}' should not specify foreign key fields",
                                     relationship.id
@@ -684,6 +670,12 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
             g.clear();
         }
 
+        // Clear shared relationship graph snapshot as well
+        if let Ok(mut g) = context.relationship_graph.write() {
+            g.relationships.clear();
+            g.model_relationships.clear();
+        }
+
         // Analyze relationships
         self.analyze_schema_relationships_refcell(
             schema,
@@ -710,13 +702,17 @@ impl RelationshipAnalyzer {
     fn analyze_schema_relationships_refcell(
         &self,
         schema: &Schema,
-        _context: &AnalysisContext,
+        context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         // First pass: collect all @relation attributes
         for declaration in &schema.declarations {
             if let Declaration::Model(model) = declaration {
-                self.analyze_model_relationships_refcell(model, diagnostics);
+                self.analyze_model_relationships_refcell(
+                    context,
+                    model,
+                    diagnostics,
+                );
             }
         }
     }
@@ -724,12 +720,14 @@ impl RelationshipAnalyzer {
     /// Model relationship analysis helper.
     fn analyze_model_relationships_refcell(
         &self,
+        context: &AnalysisContext,
         model: &crate::core::parser::ast::ModelDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         for member in &model.members {
             if let ModelMember::Field(field) = member {
                 self.analyze_field_relationships_refcell(
+                    context,
                     model,
                     field,
                     diagnostics,
@@ -741,6 +739,7 @@ impl RelationshipAnalyzer {
     /// Field relationship analysis helper.
     fn analyze_field_relationships_refcell(
         &self,
+        context: &AnalysisContext,
         model: &crate::core::parser::ast::ModelDecl,
         field: &crate::core::parser::ast::FieldDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -752,8 +751,10 @@ impl RelationshipAnalyzer {
                 if let Some(target) =
                     Self::extract_target_model_from_field_type(&field.r#type)
                 {
+                    let id = format!("{}_{}", model.name.text, field.name.text);
+                    let target_name = target.clone();
                     let relationship = Relationship {
-                        id: format!("{}_{}", model.name.text, field.name.text),
+                        id: id.clone(),
                         from_model: model.name.text.clone(),
                         from_field: field.name.text.clone(),
                         to_model: target,
@@ -763,12 +764,36 @@ impl RelationshipAnalyzer {
                         ),
                         foreign_keys: Vec::new(),
                         references: Vec::new(),
+                        span: field.span.clone(),
                     };
 
                     if let Ok(mut g) = self.relationship_graph.write() {
                         g.entry(model.name.text.clone())
                             .or_default()
                             .push(relationship);
+                    }
+
+                    // Also reflect relationship in shared context graph
+                    if let Ok(mut g) = context.relationship_graph.write() {
+                        g.relationships.insert(
+                            id.clone(),
+                            Relationship {
+                                id: id.clone(),
+                                from_model: model.name.text.clone(),
+                                from_field: field.name.text.clone(),
+                                to_model: target_name.clone(),
+                                to_field: None,
+                                relationship_type:
+                                    Self::determine_relationship_type(field),
+                                foreign_keys: Vec::new(),
+                                references: Vec::new(),
+                                span: field.span.clone(),
+                            },
+                        );
+                        g.model_relationships
+                            .entry(model.name.text.clone())
+                            .or_default()
+                            .push(id);
                     }
                 } else {
                     let diagnostic = SemanticDiagnostic::error(

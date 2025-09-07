@@ -60,14 +60,13 @@ impl SymbolTable {
             if let crate::core::parser::ast::ModelMember::Field(field) = member
             {
                 let field_symbol = Symbol::new_field(field, &model.name.text);
-                if field_scope
-                    .insert(field.name.text.clone(), field_symbol)
-                    .is_some()
+                if let Some(existing) =
+                    field_scope.insert(field.name.text.clone(), field_symbol)
                 {
                     return Err(SymbolError::DuplicateSymbol {
                         name: field.name.text.clone(),
                         scope: model.name.text.clone(),
-                        existing_span: field.span.clone(), // This would need the actual existing span
+                        existing_span: existing.declaration_span,
                         new_span: field.span.clone(),
                     });
                 }
@@ -99,14 +98,13 @@ impl SymbolTable {
             if let crate::core::parser::ast::EnumMember::Value(value) = member {
                 let value_symbol =
                     Symbol::new_enum_value(value, &enum_decl.name.text);
-                if value_scope
-                    .insert(value.name.text.clone(), value_symbol)
-                    .is_some()
+                if let Some(existing) =
+                    value_scope.insert(value.name.text.clone(), value_symbol)
                 {
                     return Err(SymbolError::DuplicateSymbol {
                         name: value.name.text.clone(),
                         scope: enum_decl.name.text.clone(),
-                        existing_span: value.span.clone(),
+                        existing_span: existing.declaration_span,
                         new_span: value.span.clone(),
                     });
                 }

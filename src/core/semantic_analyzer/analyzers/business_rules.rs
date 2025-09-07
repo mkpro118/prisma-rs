@@ -196,9 +196,72 @@ impl BusinessRuleAnalyzer {
             return;
         }
 
-        // TODO: This should be removed - data should come from shared context
-        // For now, keeping to avoid compilation errors
+        // Build model info from shared symbol table
+        if let Ok(sym) = context.symbol_table.read() {
+            if let Ok(mut info_map) = self.model_info.write() {
+                for (name, symbol) in sym.models() {
+                    if let crate::core::semantic_analyzer::symbol_table::SymbolType::Model(model_meta) = &symbol.symbol_type {
+                        let mut info = ModelInfo::new();
+                        info.name = name.clone();
+                        info.field_count = model_meta.field_count;
+                        info.has_primary_key = model_meta.has_primary_key;
+                        info.has_indexes = false; // Not tracked in symbol table; may infer later
+                        info.span = symbol.declaration_span.clone();
+                        info_map.insert(name.clone(), info);
+                    }
+                }
+            }
+        }
+
+        // Build relationship graph from shared context and enrich model info with foreign keys
+        if let (Ok(rg), Ok(mut rel_map)) = (
+            context.relationship_graph.read(),
+            self.relationship_graph.write(),
+        ) {
+            if let Ok(mut info_map) = self.model_info.write() {
+                for rel in rg.relationships.values() {
+                    // adjacency for depth/cycle
+                    rel_map
+                        .entry(rel.from_model.clone())
+                        .or_default()
+                        .insert(rel.to_model.clone());
+
+                    // Foreign key fields: use explicit list if present, else use from_field as candidate
+                    let fk_fields: Vec<String> = if rel.foreign_keys.is_empty()
+                    {
+                        vec![rel.from_field.clone()]
+                    } else {
+                        rel.foreign_keys.clone()
+                    };
+                    if let Some(info) = info_map.get_mut(&rel.from_model) {
+                        info.foreign_key_fields.extend(fk_fields);
+                    }
+                }
+            }
+        }
+
+        // Fallback: also collect information directly from the AST for standalone analyzer usage in unit tests
+        // This preserves previous behavior where BusinessRuleAnalyzer analyzed the AST independently.
         self.collect_schema_information(schema);
+
+        // Collect provider data from AST
+        for declaration in &schema.declarations {
+            if let Declaration::Datasource(datasource) = declaration {
+                for assignment in &datasource.assignments {
+                    if assignment.key.text == "provider" {
+                        if let Some(provider) =
+                            Self::extract_string_value(&assignment.value)
+                        {
+                            if let Ok(mut set) =
+                                self.datasource_providers.write()
+                            {
+                                set.insert(provider);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Validate business rules using collected data
         self.validate_database_integrity_rules(context, diagnostics);
@@ -491,9 +554,7 @@ impl BusinessRuleAnalyzer {
         visited: &mut HashSet<String>,
         current_depth: usize,
     ) -> usize {
-        if visited.contains(model_name)
-            || current_depth >= self.config.max_relationship_depth
-        {
+        if visited.contains(model_name) {
             return current_depth;
         }
 
@@ -2559,6 +2620,110 @@ mod tests {
         // Should handle self-referencing models without infinite recursion
         // The implementation should prevent infinite loops with the visited set
         assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key
+    }
+
+    #[test]
+    fn test_relationship_depth_threshold_warning() {
+        // Build a simple chain A -> B -> C to exceed a low depth threshold
+        let model_a = ModelDecl {
+            docs: None,
+            name: create_test_ident("A"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("bs"),
+                r#type: TypeRef::List(ListType {
+                    inner: Box::new(TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("B")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    })),
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: vec![],
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: vec![],
+            span: create_test_span(),
+        };
+
+        let model_b = ModelDecl {
+            docs: None,
+            name: create_test_ident("B"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("cs"),
+                r#type: TypeRef::List(ListType {
+                    inner: Box::new(TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("C")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    })),
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: vec![],
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("relation")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: vec![],
+            span: create_test_span(),
+        };
+
+        let model_c = ModelDecl {
+            docs: None,
+            name: create_test_ident("C"),
+            members: vec![],
+            attrs: vec![],
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(model_a),
+                Declaration::Model(model_b),
+                Declaration::Model(model_c),
+            ],
+            span: create_test_span(),
+        };
+
+        let config = BusinessRuleConfig {
+            max_relationship_depth: 1,
+            ..BusinessRuleConfig::default()
+        };
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new_test(&options);
+
+        let result = analyzer.analyze(&schema, &context);
+
+        // Expect a performance warning about relationship depth
+        let has_depth_warning = result.diagnostics.iter().any(|d| {
+            d.diagnostic_code == DiagnosticCode::PerformanceWarning
+                && d.message.contains("depth")
+        });
+        assert!(has_depth_warning);
     }
 
     #[test]

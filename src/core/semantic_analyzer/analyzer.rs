@@ -172,7 +172,7 @@ impl SemanticAnalyzer {
         })? = RelationshipGraph::default();
 
         // Create analysis context with shared state
-        let context = AnalysisContext::new(
+        let mut context = AnalysisContext::new(
             options,
             Arc::clone(&self.symbol_table),
             Arc::clone(&self.type_resolver),
@@ -185,7 +185,7 @@ impl SemanticAnalyzer {
             ConcurrencyMode::Sequential => {
                 self.analyze_sequential(
                     schema,
-                    &context,
+                    &mut context,
                     options,
                     &mut temp_diagnostics,
                 )?;
@@ -193,7 +193,7 @@ impl SemanticAnalyzer {
                     .extend(temp_diagnostics.take_all());
             }
             ConcurrencyMode::Concurrent { .. } => {
-                self.analyze_parallel(schema, &context, options)?;
+                self.analyze_parallel(schema, &mut context, options)?;
             }
         }
 
@@ -217,6 +217,14 @@ impl SemanticAnalyzer {
                 }
             })?)
             .clone(),
+            relationship_graph: (*self.relationship_graph.read().map_err(
+                |e| AnalysisError::InvalidDependencyGraph {
+                    message: format!(
+                        "Failed to acquire relationship graph read lock: {e}"
+                    ),
+                },
+            )?)
+            .clone(),
             diagnostics: self.diagnostic_collector.clone().take_all(),
             analysis_metadata: context.take_metadata(),
             analysis_time,
@@ -228,7 +236,7 @@ impl SemanticAnalyzer {
     fn analyze_sequential(
         &self,
         schema: &Schema,
-        context: &AnalysisContext,
+        context: &mut AnalysisContext,
         options: &AnalyzerOptions,
         diagnostic_collector: &mut DiagnosticCollector,
     ) -> Result<(), AnalysisError> {
@@ -242,16 +250,20 @@ impl SemanticAnalyzer {
         for &analyzer_index in &execution_order {
             let analyzer = &self.phase_analyzers[analyzer_index];
 
-            // Check timeout
-            if context.elapsed_time() > options.phase_timeout {
+            // Execute the analyzer with per-phase timing
+            let phase_name = analyzer.phase_name().to_string();
+            let started = Instant::now();
+            let phase_result = analyzer.analyze(schema, context);
+            let duration = started.elapsed();
+            context.record_phase_timing(phase_name.clone(), duration);
+
+            // Per-phase timeout check
+            if duration > options.phase_timeout {
                 return Err(AnalysisError::Timeout {
-                    phase: analyzer.phase_name().to_string(),
-                    elapsed: context.elapsed_time(),
+                    phase: phase_name,
+                    elapsed: duration,
                 });
             }
-
-            // Execute the analyzer
-            let phase_result = analyzer.analyze(schema, context);
             let has_fatal = phase_result.has_fatal_errors();
             diagnostic_collector.extend(phase_result.diagnostics);
 
@@ -275,7 +287,7 @@ impl SemanticAnalyzer {
     fn analyze_parallel(
         &mut self,
         schema: &Schema,
-        context: &AnalysisContext,
+        context: &mut AnalysisContext,
         options: &AnalyzerOptions,
     ) -> Result<(), AnalysisError> {
         let Some(dependency_graph) = self.dependency_graph.as_ref() else {
@@ -327,9 +339,11 @@ impl SemanticAnalyzer {
                 .collect();
 
             if ready.is_empty() {
-                return Err(AnalysisError::CircularDependency {
-                    cycle: vec!["Unknown".to_string()], // Simplified for now
-                });
+                // Provide actual cycle if available
+                let cycle = dependency_graph
+                    .find_cycle()
+                    .unwrap_or_else(|| vec!["Unknown".to_string()]);
+                return Err(AnalysisError::CircularDependency { cycle });
             }
 
             let current_layer: Vec<usize> = ready.into_iter().collect();
@@ -356,7 +370,7 @@ impl SemanticAnalyzer {
     fn execute_layer_parallel(
         &mut self,
         schema: &Schema,
-        context: &AnalysisContext,
+        context: &mut AnalysisContext,
         options: &AnalyzerOptions,
         layer: &[usize],
     ) -> Result<(), AnalysisError> {
@@ -365,15 +379,18 @@ impl SemanticAnalyzer {
             let analyzer_index = layer[0];
             let analyzer = &self.phase_analyzers[analyzer_index];
 
-            // Check timeout
-            if context.elapsed_time() > options.phase_timeout {
+            let phase_name = analyzer.phase_name().to_string();
+            let started = Instant::now();
+            let phase_result = analyzer.analyze(schema, context);
+            let duration = started.elapsed();
+            context.record_phase_timing(phase_name.clone(), duration);
+
+            if duration > options.phase_timeout {
                 return Err(AnalysisError::Timeout {
-                    phase: analyzer.phase_name().to_string(),
-                    elapsed: context.elapsed_time(),
+                    phase: phase_name,
+                    elapsed: duration,
                 });
             }
-
-            let phase_result = analyzer.analyze(schema, context);
             let has_fatal = phase_result.has_fatal_errors();
             self.diagnostic_collector.extend(phase_result.diagnostics);
 
@@ -414,18 +431,19 @@ impl SemanticAnalyzer {
             // Execute parallel analyzers - for now implemented sequentially
             // TODO: Implement true parallelism using scoped threads when data ownership is resolved
             for &analyzer_index in &parallel_analyzers {
-                // Check timeout
-                if context.elapsed_time() > options.phase_timeout {
+                let analyzer = &self.phase_analyzers[analyzer_index];
+                let phase_name = analyzer.phase_name().to_string();
+                let started = Instant::now();
+                let phase_result = analyzer.analyze(schema, context);
+                let duration = started.elapsed();
+                context.record_phase_timing(phase_name.clone(), duration);
+
+                if duration > options.phase_timeout {
                     return Err(AnalysisError::Timeout {
-                        phase: self.phase_analyzers[analyzer_index]
-                            .phase_name()
-                            .to_string(),
-                        elapsed: context.elapsed_time(),
+                        phase: phase_name,
+                        elapsed: duration,
                     });
                 }
-
-                let analyzer = &self.phase_analyzers[analyzer_index];
-                let phase_result = analyzer.analyze(schema, context);
                 self.diagnostic_collector.extend(phase_result.diagnostics);
             }
 
@@ -446,15 +464,18 @@ impl SemanticAnalyzer {
             for &analyzer_index in layer {
                 let analyzer = &self.phase_analyzers[analyzer_index];
 
-                // Check timeout
-                if context.elapsed_time() > options.phase_timeout {
+                let phase_name = analyzer.phase_name().to_string();
+                let started = Instant::now();
+                let phase_result = analyzer.analyze(schema, context);
+                let duration = started.elapsed();
+                context.record_phase_timing(phase_name.clone(), duration);
+
+                if duration > options.phase_timeout {
                     return Err(AnalysisError::Timeout {
-                        phase: analyzer.phase_name().to_string(),
-                        elapsed: context.elapsed_time(),
+                        phase: phase_name,
+                        elapsed: duration,
                     });
                 }
-
-                let phase_result = analyzer.analyze(schema, context);
                 let has_fatal = phase_result.has_fatal_errors();
                 self.diagnostic_collector.extend(phase_result.diagnostics);
 
@@ -1086,5 +1107,301 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_pipeline_shared_state_end_to_end() {
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // datasource
+        let datasource = DatasourceDecl {
+            name: Ident {
+                text: "db".into(),
+                span: sp(),
+            },
+            assignments: vec![Assignment {
+                key: Ident {
+                    text: "provider".into(),
+                    span: sp(),
+                },
+                value: Expr::StringLit(StringLit {
+                    value: "postgresql".into(),
+                    span: sp(),
+                }),
+                docs: None,
+                span: sp(),
+            }],
+            docs: None,
+            span: sp(),
+        };
+
+        // Model Post
+        let post = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "Post".into(),
+                span: sp(),
+            },
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "title".into(),
+                    span: sp(),
+                },
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "String".into(),
+                            span: sp(),
+                        }],
+                        span: sp(),
+                    },
+                    span: sp(),
+                }),
+                optional: false,
+                modifiers: vec![],
+                attrs: vec![],
+                span: sp(),
+            })],
+            attrs: vec![],
+            span: sp(),
+        };
+
+        // Model User with relation to Post
+        let user = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "User".into(),
+                span: sp(),
+            },
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "posts".into(),
+                    span: sp(),
+                },
+                r#type: TypeRef::List(ListType {
+                    inner: Box::new(TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "Post".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    })),
+                    span: sp(),
+                }),
+                optional: false,
+                modifiers: vec![],
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "relation".into(),
+                            span: sp(),
+                        }],
+                        span: sp(),
+                    },
+                    args: None,
+                    span: sp(),
+                }],
+                span: sp(),
+            })],
+            attrs: vec![],
+            span: sp(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Datasource(datasource),
+                Declaration::Model(user),
+                Declaration::Model(post),
+            ],
+            span: sp(),
+        };
+
+        let options = AnalyzerOptions::default();
+        let mut sa = SemanticAnalyzer::new();
+        let result = sa.analyze(&schema, &options).expect("analysis ok");
+
+        // Symbol table should contain our two models
+        let model_names: Vec<_> = result
+            .symbol_table
+            .models()
+            .map(|(n, _)| n.clone())
+            .collect();
+        assert!(model_names.contains(&"User".to_string()));
+        assert!(model_names.contains(&"Post".to_string()));
+
+        // No UnknownType errors expected
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.diagnostic_code != DiagnosticCode::UnknownType)
+        );
+
+        // Ensure analysis produced per-phase timings for at least one phase
+        let summary = result.summary();
+        assert!(summary.total_symbols >= 2);
+        // Expect symbol-collection phase timing to be present
+        assert!(
+            result
+                .analysis_metadata
+                .get_phase_timing("symbol-collection")
+                .is_some()
+        );
+
+        // Expect attribute-validation phase timing to be present (ran after symbol collection)
+        assert!(
+            result
+                .analysis_metadata
+                .get_phase_timing("attribute-validation")
+                .is_some()
+        );
+
+        // Relationship graph should include the User->posts relationship id
+        let graph = &result.relationship_graph;
+        let user_edges = graph.model_relationships.get("User");
+        assert!(user_edges.is_some());
+        let ids = user_edges.unwrap();
+        assert!(ids.iter().any(|id| id == "User_posts"));
+    }
+
+    #[test]
+    fn test_pipeline_attribute_invalid_argument_span() {
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::{AnalyzerOptions, DiagnosticCode};
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 20,
+                },
+            }
+        }
+
+        let field = FieldDecl {
+            docs: None,
+            name: Ident {
+                text: "email".into(),
+                span: sp(),
+            },
+            r#type: TypeRef::Named(NamedType {
+                name: QualifiedIdent {
+                    parts: vec![Ident {
+                        text: "String".into(),
+                        span: sp(),
+                    }],
+                    span: sp(),
+                },
+                span: sp(),
+            }),
+            optional: false,
+            modifiers: vec![],
+            attrs: vec![FieldAttribute {
+                docs: None,
+                name: QualifiedIdent {
+                    parts: vec![Ident {
+                        text: "unique".into(),
+                        span: sp(),
+                    }],
+                    span: sp(),
+                },
+                args: Some(ArgList {
+                    items: vec![Arg::Named(NamedArg {
+                        name: Ident {
+                            text: "invalid_arg".into(),
+                            span: sp(),
+                        },
+                        value: Expr::StringLit(StringLit {
+                            value: "value".into(),
+                            span: sp(),
+                        }),
+                        span: sp(),
+                    })],
+                    span: sp(),
+                }),
+                span: sp(),
+            }],
+            span: sp(),
+        };
+
+        let model = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "User".into(),
+                span: sp(),
+            },
+            members: vec![ModelMember::Field(field)],
+            attrs: vec![],
+            span: sp(),
+        };
+
+        let datasource = DatasourceDecl {
+            name: Ident {
+                text: "db".into(),
+                span: sp(),
+            },
+            assignments: vec![Assignment {
+                key: Ident {
+                    text: "provider".into(),
+                    span: sp(),
+                },
+                value: Expr::StringLit(StringLit {
+                    value: "postgresql".into(),
+                    span: sp(),
+                }),
+                docs: None,
+                span: sp(),
+            }],
+            docs: None,
+            span: sp(),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Datasource(datasource),
+                Declaration::Model(model),
+            ],
+            span: sp(),
+        };
+
+        let options = AnalyzerOptions::default();
+        let mut sa = SemanticAnalyzer::new();
+        let result = sa.analyze(&schema, &options).expect("analysis ok");
+
+        // Find invalid attribute argument diagnostic and ensure span is non-zero
+        let invalids: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.diagnostic_code == DiagnosticCode::InvalidAttributeArgument
+            })
+            .collect();
+
+        assert!(
+            !invalids.is_empty(),
+            "expected at least one InvalidAttributeArgument diagnostic"
+        );
+        assert!(invalids[0].span.start.line > 0);
+        assert!(invalids[0].span.end.line > 0);
     }
 }

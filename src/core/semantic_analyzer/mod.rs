@@ -46,10 +46,17 @@ pub use analyzer::SemanticAnalyzer;
 pub use context::{AnalysisContext, AnalysisResult};
 pub use diagnostics::{DiagnosticCode, FixHint, SemanticDiagnostic};
 pub use symbol_table::{Symbol, SymbolTable, SymbolType};
+// Re-export analyzer traits
 pub use traits::{
     AttributeAnalyzer, DeclarationAnalyzer, PhaseAnalyzer, RelationshipAnalyzer,
 };
-pub use type_resolver::{ResolvedType, ScalarType, TypeResolver};
+// Re-export analyzer implementations; alias the relationship phase to avoid a
+// type-name collision with the RelationshipAnalyzer trait.
+pub use analyzers::attribute_validation::AttributeValidationAnalyzer;
+pub use analyzers::business_rules::BusinessRuleAnalyzer;
+pub use analyzers::relationship::RelationshipAnalyzer as RelationshipPhase;
+pub use analyzers::symbol_collector::SymbolCollectionAnalyzer;
+pub use analyzers::type_resolution::TypeResolutionAnalyzer;
 
 /// Configuration options for semantic analysis.
 /// Validation mode configuration

@@ -5,6 +5,7 @@
 //! symbol table. It establishes the foundation for all subsequent analysis.
 
 use crate::core::parser::ast::{Declaration, EnumMember, ModelMember, Schema};
+use crate::core::semantic_analyzer::symbol_table::SymbolError;
 use crate::core::semantic_analyzer::{
     context::{AnalysisContext, PhaseResult},
     diagnostics::{DiagnosticCode, SemanticDiagnostic},
@@ -273,6 +274,93 @@ impl PhaseAnalyzer for SymbolCollectionAnalyzer {
 
         Self::check_has_datasource(schema, &mut diagnostics);
 
+        // Populate the shared symbol table with declarations
+        if let Ok(mut symtab) = context.symbol_table.write() {
+            for declaration in &schema.declarations {
+                match declaration {
+                    Declaration::Model(m) => {
+                        if let Err(err) = symtab.add_model(m) {
+                            if let SymbolError::DuplicateSymbol {
+                                name,
+                                existing_span,
+                                new_span,
+                                ..
+                            } = err
+                            {
+                                diagnostics.push(
+                                    SemanticDiagnostic::duplicate_declaration(
+                                        new_span,
+                                        &name,
+                                        existing_span,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Declaration::Enum(e) => {
+                        if let Err(err) = symtab.add_enum(e) {
+                            if let SymbolError::DuplicateSymbol {
+                                name,
+                                existing_span,
+                                new_span,
+                                ..
+                            } = err
+                            {
+                                diagnostics.push(
+                                    SemanticDiagnostic::duplicate_declaration(
+                                        new_span,
+                                        &name,
+                                        existing_span,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Declaration::Datasource(d) => {
+                        if let Err(err) = symtab.add_datasource(d) {
+                            if let SymbolError::DuplicateSymbol {
+                                name,
+                                existing_span,
+                                new_span,
+                                ..
+                            } = err
+                            {
+                                diagnostics.push(
+                                    SemanticDiagnostic::duplicate_declaration(
+                                        new_span,
+                                        &name,
+                                        existing_span,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Declaration::Generator(g) => {
+                        if let Err(err) = symtab.add_generator(g) {
+                            if let SymbolError::DuplicateSymbol {
+                                name,
+                                existing_span,
+                                new_span,
+                                ..
+                            } = err
+                            {
+                                diagnostics.push(
+                                    SemanticDiagnostic::duplicate_declaration(
+                                        new_span,
+                                        &name,
+                                        existing_span,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Declaration::Type(_t) => {
+                        // Type aliases currently not added to the symbol table.
+                    }
+                }
+            }
+        }
+
         PhaseResult::new(diagnostics)
     }
 
@@ -440,6 +528,96 @@ mod tests {
                 .count()
                 >= 1
         );
+    }
+
+    #[test]
+    fn test_duplicate_model_related_span() {
+        use crate::core::semantic_analyzer::DiagnosticCode;
+
+        fn sp(s: (u32, u32), e: (u32, u32)) -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation {
+                    line: s.0,
+                    column: s.1,
+                },
+                end: SymbolLocation {
+                    line: e.0,
+                    column: e.1,
+                },
+            }
+        }
+
+        // Two models with the same name "User" using distinct spans
+        let user_model1 = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "User".to_string(),
+                span: sp((1, 1), (1, 5)),
+            },
+            members: vec![],
+            attrs: vec![],
+            span: sp((1, 1), (3, 1)),
+        };
+
+        let user_model2 = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "User".to_string(),
+                span: sp((4, 1), (4, 5)),
+            },
+            members: vec![],
+            attrs: vec![],
+            span: sp((4, 1), (6, 1)),
+        };
+
+        // Include a datasource to avoid MissingDatasource warning noise
+        let ds = DatasourceDecl {
+            name: Ident {
+                text: "db".to_string(),
+                span: sp((7, 1), (7, 3)),
+            },
+            assignments: vec![Assignment {
+                key: Ident {
+                    text: "provider".to_string(),
+                    span: sp((8, 3), (8, 11)),
+                },
+                value: Expr::StringLit(StringLit {
+                    value: "postgresql".to_string(),
+                    span: sp((8, 14), (8, 26)),
+                }),
+                docs: None,
+                span: sp((8, 3), (8, 26)),
+            }],
+            docs: None,
+            span: sp((7, 1), (9, 1)),
+        };
+
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(user_model1.clone()),
+                Declaration::Model(user_model2.clone()),
+                Declaration::Datasource(ds),
+            ],
+            span: sp((1, 1), (10, 1)),
+        };
+
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
+
+        // Find duplicate declaration diagnostic and verify it carries a related span pointing to the first model
+        let mut dup_diags = result.diagnostics.iter().filter(|d| {
+            d.diagnostic_code == DiagnosticCode::DuplicateDeclaration
+        });
+
+        let diag = dup_diags
+            .next()
+            .expect("expected duplicate declaration diagnostic");
+        assert!(
+            !diag.related_spans.is_empty(),
+            "duplicate declaration should include the first declaration span"
+        );
+        assert_eq!(diag.related_spans[0].span, user_model1.span);
     }
 
     #[test]

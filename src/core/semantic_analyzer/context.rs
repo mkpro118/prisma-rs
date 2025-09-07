@@ -72,6 +72,8 @@ pub struct Relationship {
     pub relationship_type: RelationshipType,
     pub foreign_keys: Vec<String>,
     pub references: Vec<String>,
+    /// Source span for the relationship (attribute or field)
+    pub span: crate::core::scanner::tokens::SymbolSpan,
 }
 
 /// Type of relationship between models.
@@ -219,6 +221,15 @@ impl AnalysisContext {
     #[must_use]
     pub fn has_timed_out(&self) -> bool {
         self.elapsed_time() > self.options.phase_timeout
+    }
+
+    /// Record per-phase timing into analysis metadata.
+    pub fn record_phase_timing(
+        &mut self,
+        phase_name: String,
+        duration: Duration,
+    ) {
+        self.metadata.record_phase_timing(phase_name, duration);
     }
 
     /// Take the analysis metadata (consuming it).
@@ -479,6 +490,9 @@ pub struct AnalysisResult {
     /// The type resolver with all resolved types
     pub type_resolver: TypeResolver,
 
+    /// The relationship graph built during analysis
+    pub relationship_graph: RelationshipGraph,
+
     /// All diagnostics from all phases
     pub diagnostics: Vec<SemanticDiagnostic>,
 
@@ -546,6 +560,24 @@ impl AnalysisResult {
             enums_count: self.symbol_table.enums().count(),
             total_symbols: self.symbol_table.total_symbol_count(),
         }
+    }
+}
+
+#[cfg(test)]
+impl AnalysisResult {
+    /// Test helper: return relationship edges as (from_model, from_field, to_model)
+    pub fn test_relationship_edges(&self) -> Vec<(String, String, String)> {
+        self.relationship_graph
+            .relationships
+            .values()
+            .map(|r| {
+                (
+                    r.from_model.clone(),
+                    r.from_field.clone(),
+                    r.to_model.clone(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -1160,6 +1192,7 @@ mod tests {
         let analysis_result = AnalysisResult {
             symbol_table,
             type_resolver,
+            relationship_graph: RelationshipGraph::default(),
             diagnostics,
             analysis_metadata: metadata,
             analysis_time: Duration::from_millis(100),
@@ -1271,6 +1304,7 @@ mod tests {
         let successful_result = AnalysisResult {
             symbol_table,
             type_resolver,
+            relationship_graph: RelationshipGraph::default(),
             diagnostics,
             analysis_metadata: metadata,
             analysis_time: Duration::from_millis(50),

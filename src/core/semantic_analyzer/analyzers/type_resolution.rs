@@ -222,45 +222,42 @@ impl PhaseAnalyzer for TypeResolutionAnalyzer {
     fn analyze(
         &self,
         schema: &Schema,
-        _context: &AnalysisContext,
+        context: &AnalysisContext,
     ) -> PhaseResult {
         let mut diagnostics = Vec::new();
 
-        // Build a minimal symbol table from the schema so named types can resolve
-        let mut symbol_table =
-            crate::core::semantic_analyzer::symbol_table::SymbolTable::new();
-        for decl in &schema.declarations {
-            match decl {
-                Declaration::Model(m) => {
-                    let _ = symbol_table.add_model(m);
-                }
-                Declaration::Enum(e) => {
-                    let _ = symbol_table.add_enum(e);
-                }
-                Declaration::Datasource(d) => {
-                    let _ = symbol_table.add_datasource(d);
-                }
-                Declaration::Generator(g) => {
-                    let _ = symbol_table.add_generator(g);
-                }
-                Declaration::Type(_) => {
-                    // Type aliases are handled indirectly during resolution
-                }
-            }
+        // Use shared symbol table and resolver from the analysis context
+        let symtab_guard = context.symbol_table.read();
+        let resolver_guard = context.type_resolver.write();
+        if symtab_guard.is_err() || resolver_guard.is_err() {
+            return PhaseResult::error(SemanticDiagnostic::error(
+                schema.span.clone(),
+                "Failed to acquire analysis locks".to_string(),
+                DiagnosticCode::InternalError,
+            ));
         }
-
-        // Use a local resolver cloned from self to allow read-only analyze API
-        let mut resolver = self.type_resolver.clone();
+        let symbol_table = symtab_guard.unwrap();
+        let mut resolver = resolver_guard.unwrap();
 
         // Resolve all field types and collect diagnostics
         for declaration in &schema.declarations {
             if let Declaration::Model(model) = declaration {
+                let current_model_name = model.name.text.clone();
                 for member in &model.members {
                     if let ModelMember::Field(field) = member {
                         match resolver
                             .resolve_type(&field.r#type, &symbol_table)
                         {
                             Ok(resolved_ty) => {
+                                // track dependencies when a field references another model
+                                if let ResolvedType::Model(target) =
+                                    &resolved_ty
+                                {
+                                    resolver.add_type_dependency(
+                                        current_model_name.clone(),
+                                        target.clone(),
+                                    );
+                                }
                                 Self::validate_resolved_type(
                                     &resolved_ty,
                                     &field.r#type,
@@ -280,13 +277,25 @@ impl PhaseAnalyzer for TypeResolutionAnalyzer {
             }
         }
 
-        // Check for circular dependencies accumulated in the resolver
+        // Check for circular dependencies accumulated in the shared resolver
         if let Err(err) = resolver.check_circular_dependencies() {
             Self::add_type_resolution_error(
                 err,
                 &schema.span,
                 &mut diagnostics,
             );
+        }
+
+        // Backward-compatibility for tests that add dependencies to self.type_resolver
+        // If the analyzer's internal resolver has dependency edges, also check it for cycles.
+        if self.type_resolver.stats().dependency_edges > 0 {
+            if let Err(err) = self.type_resolver.check_circular_dependencies() {
+                Self::add_type_resolution_error(
+                    err,
+                    &schema.span,
+                    &mut diagnostics,
+                );
+            }
         }
 
         PhaseResult::new(diagnostics)

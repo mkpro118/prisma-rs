@@ -1082,6 +1082,8 @@ mod tests {
             DiagnosticCode::UnknownAttribute
         );
         assert!(result.diagnostics[0].message.contains("unknownattr"));
+        // Span should not be 0:0
+        assert!(result.diagnostics[0].span.start.line > 0);
     }
 
     #[test]
