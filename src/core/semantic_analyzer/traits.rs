@@ -5,8 +5,10 @@
 //! together to create custom analysis pipelines.
 
 use crate::core::parser::ast::{FieldAttribute, Schema};
-use crate::core::semantic_analyzer::context::{AnalysisContext, PhaseResult};
-use crate::core::semantic_analyzer::diagnostics::SemanticDiagnostic;
+use crate::core::semantic_analyzer::{
+    context::{AnalysisContext, PhaseResult},
+    diagnostics::SemanticDiagnostic,
+};
 
 /// Core trait for analysis phases.
 ///
@@ -24,26 +26,26 @@ use crate::core::semantic_analyzer::diagnostics::SemanticDiagnostic;
 ///         "Custom Analysis"
 ///     }
 ///     
-///     fn analyze(&mut self, schema: &Schema, context: &mut AnalysisContext) -> PhaseResult {
+///     fn analyze(&self, schema: &Schema, context: &AnalysisContext) -> PhaseResult {
 ///         let mut diagnostics = Vec::new();
 ///         // Perform analysis...
 ///         PhaseResult::new(diagnostics)
 ///     }
 /// }
 /// ```
-pub trait PhaseAnalyzer: Send {
+pub trait PhaseAnalyzer: Send + Sync {
     /// Get the name of this analysis phase for debugging and dependency resolution.
     fn phase_name(&self) -> &'static str;
 
     /// Analyze the schema in this phase.
     ///
     /// The analyzer should examine the schema and context, perform its specific
-    /// analysis, and return diagnostics. It may also update the context with
-    /// new information for later phases.
+    /// analysis, and return diagnostics. It may also update the shared state
+    /// through the context's Arc<`RwLock`<>> protected fields.
     fn analyze(
-        &mut self,
+        &self,
         schema: &Schema,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
     ) -> PhaseResult;
 
     /// Get the analysis dependencies (phases that must run before this one).
@@ -77,12 +79,12 @@ pub trait PhaseAnalyzer: Send {
 /// This trait allows for fine-grained analysis of specific declaration types
 /// (models, enums, etc.). Analyzers can implement this trait to focus on
 /// particular aspects of declarations.
-pub trait DeclarationAnalyzer<T>: Send {
+pub trait DeclarationAnalyzer<T>: Send + Sync {
     /// Analyze a specific declaration and return any diagnostics.
     fn analyze_declaration(
-        &mut self,
+        &self,
         decl: &T,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
     ) -> Vec<SemanticDiagnostic>;
 
     /// Get the name of this declaration analyzer for debugging.
@@ -93,12 +95,12 @@ pub trait DeclarationAnalyzer<T>: Send {
 ///
 /// Relationship analyzers examine how different schema elements interact,
 /// such as foreign key relationships, inheritance, or dependencies.
-pub trait RelationshipAnalyzer: Send {
+pub trait RelationshipAnalyzer: Send + Sync {
     /// Analyze relationships within the entire schema.
     fn analyze_relationships(
-        &mut self,
+        &self,
         schema: &Schema,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
     ) -> Vec<SemanticDiagnostic>;
 
     /// Get the name of this relationship analyzer.
@@ -109,10 +111,10 @@ pub trait RelationshipAnalyzer: Send {
 ///
 /// Attribute analyzers validate that attributes are used correctly, have
 /// valid arguments, and don't conflict with other attributes.
-pub trait AttributeAnalyzer: Send {
+pub trait AttributeAnalyzer: Send + Sync {
     /// Analyze a specific attribute in context.
     fn analyze_attribute(
-        &mut self,
+        &self,
         attr: &FieldAttribute,
         context: &AttributeContext,
     ) -> Vec<SemanticDiagnostic>;
@@ -357,14 +359,17 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: true,
                 performance_warnings: true,
-                enable_parallelism: true,
+            },
+            concurrency: ConcurrencyMode::Concurrent {
+                max_threads: 4,
+                threshold: 2,
             },
             phase_timeout: Duration::from_secs(30),
             target_provider: Some(DatabaseProvider::PostgreSQL),
             max_diagnostics: 100,
         };
 
-        let analysis_context = AnalysisContext::new(&options);
+        let analysis_context = AnalysisContext::new_test(&options);
 
         let attr_context = AttributeContext {
             element_type: AttributeElementType::Field,
@@ -545,7 +550,7 @@ mod tests {
         // Create a mock context for testing
         use crate::core::semantic_analyzer::AnalyzerOptions;
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = AnalysisContext::new_test(&options);
 
         let test_declaration = String::from("test_model");
         let diagnostics =
@@ -571,7 +576,7 @@ mod tests {
             },
         };
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = AnalysisContext::new_test(&options);
 
         let diagnostics = analyzer.analyze_relationships(&schema, &mut context);
         assert!(diagnostics.is_empty());
@@ -614,7 +619,7 @@ mod tests {
         };
 
         let options = AnalyzerOptions::default();
-        let analysis_context = AnalysisContext::new(&options);
+        let analysis_context = AnalysisContext::new_test(&options);
         let attr_context = AttributeContext {
             element_type: AttributeElementType::Field,
             element_name: "user_id",
@@ -648,7 +653,7 @@ mod tests {
             },
         };
         let options = AnalyzerOptions::default();
-        let context = AnalysisContext::new(&options);
+        let context = AnalysisContext::new_test(&options);
 
         let diagnostics = rule.apply_rule(&schema, &context);
         assert!(diagnostics.is_empty());

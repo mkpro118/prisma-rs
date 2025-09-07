@@ -6,14 +6,15 @@
 
 use crate::core::parser::ast::Schema;
 use crate::core::semantic_analyzer::{
-    AnalyzerOptions, ValidationMode,
-    context::{AnalysisContext, AnalysisResult},
+    AnalyzerOptions, ConcurrencyMode, ValidationMode,
+    context::{AnalysisContext, AnalysisResult, RelationshipGraph},
     diagnostics::DiagnosticCollector,
     symbol_table::SymbolTable,
     traits::PhaseAnalyzer,
     type_resolver::TypeResolver,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 /// Main orchestrator for semantic analysis.
@@ -21,6 +22,10 @@ use std::time::Instant;
 /// The `SemanticAnalyzer` manages a collection of pluggable analyzers and
 /// executes them in dependency order. It supports both sequential and parallel
 /// execution modes based on analyzer capabilities and configuration.
+///
+/// The analyzer maintains shared state (`SymbolTable`, `TypeResolver`, `RelationshipGraph`)
+/// that phases can read from and write to, enabling the pipeline architecture
+/// where each phase builds upon the work of previous phases.
 ///
 /// ## Examples
 ///
@@ -39,11 +44,14 @@ pub struct SemanticAnalyzer {
     /// Phase analyzers in registration order
     phase_analyzers: Vec<Box<dyn PhaseAnalyzer>>,
 
-    /// Symbol table for tracking declarations and their metadata
-    symbol_table: SymbolTable,
+    /// Shared symbol table for tracking declarations and their metadata
+    symbol_table: Arc<RwLock<SymbolTable>>,
 
-    /// Type resolver for handling type references
-    type_resolver: TypeResolver,
+    /// Shared type resolver for handling type references
+    type_resolver: Arc<RwLock<TypeResolver>>,
+
+    /// Shared relationship graph for tracking model relationships
+    relationship_graph: Arc<RwLock<RelationshipGraph>>,
 
     /// Collector for diagnostics from all phases
     diagnostic_collector: DiagnosticCollector,
@@ -58,8 +66,11 @@ impl SemanticAnalyzer {
     pub fn new() -> Self {
         Self {
             phase_analyzers: Self::create_default_analyzers(),
-            symbol_table: SymbolTable::new(),
-            type_resolver: TypeResolver::new(),
+            symbol_table: Arc::new(RwLock::new(SymbolTable::new())),
+            type_resolver: Arc::new(RwLock::new(TypeResolver::new())),
+            relationship_graph: Arc::new(RwLock::new(
+                RelationshipGraph::default(),
+            )),
             diagnostic_collector: DiagnosticCollector::new(),
             dependency_graph: None,
         }
@@ -70,8 +81,11 @@ impl SemanticAnalyzer {
     pub fn with_analyzers(analyzers: Vec<Box<dyn PhaseAnalyzer>>) -> Self {
         Self {
             phase_analyzers: analyzers,
-            symbol_table: SymbolTable::new(),
-            type_resolver: TypeResolver::new(),
+            symbol_table: Arc::new(RwLock::new(SymbolTable::new())),
+            type_resolver: Arc::new(RwLock::new(TypeResolver::new())),
+            relationship_graph: Arc::new(RwLock::new(
+                RelationshipGraph::default(),
+            )),
             diagnostic_collector: DiagnosticCollector::new(),
             dependency_graph: None,
         }
@@ -135,25 +149,43 @@ impl SemanticAnalyzer {
 
         // Clear previous results
         self.diagnostic_collector.clear();
-        self.symbol_table = SymbolTable::new();
-        self.type_resolver = TypeResolver::new();
+        *self.symbol_table.write().unwrap() = SymbolTable::new();
+        *self.type_resolver.write().unwrap() = TypeResolver::new();
+        *self.relationship_graph.write().unwrap() =
+            RelationshipGraph::default();
 
-        // Create analysis context
-        let mut context = AnalysisContext::new(options);
+        // Create analysis context with shared state
+        let context = AnalysisContext::new(
+            options,
+            Arc::clone(&self.symbol_table),
+            Arc::clone(&self.type_resolver),
+            Arc::clone(&self.relationship_graph),
+        );
 
         // Execute analysis phases
-        if options.features.enable_parallelism {
-            self.analyze_parallel(schema, &mut context, options)?;
-        } else {
-            self.analyze_sequential(schema, &mut context, options)?;
+        let mut temp_diagnostics = DiagnosticCollector::new();
+        match options.concurrency {
+            ConcurrencyMode::Sequential => {
+                self.analyze_sequential(
+                    schema,
+                    &context,
+                    options,
+                    &mut temp_diagnostics,
+                )?;
+                self.diagnostic_collector
+                    .extend(temp_diagnostics.take_all());
+            }
+            ConcurrencyMode::Concurrent { .. } => {
+                self.analyze_parallel(schema, &context, options)?;
+            }
         }
 
         let analysis_time = start_time.elapsed();
 
         // Build final result
         Ok(AnalysisResult {
-            symbol_table: self.symbol_table.clone(),
-            type_resolver: self.type_resolver.clone(),
+            symbol_table: (*self.symbol_table.read().unwrap()).clone(),
+            type_resolver: (*self.type_resolver.read().unwrap()).clone(),
             diagnostics: self.diagnostic_collector.clone().take_all(),
             analysis_metadata: context.take_metadata(),
             analysis_time,
@@ -163,10 +195,11 @@ impl SemanticAnalyzer {
 
     /// Execute analyzers sequentially in dependency order.
     fn analyze_sequential(
-        &mut self,
+        &self,
         schema: &Schema,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
         options: &AnalyzerOptions,
+        diagnostic_collector: &mut DiagnosticCollector,
     ) -> Result<(), AnalysisError> {
         let Some(dependency_graph) = self.dependency_graph.as_ref() else {
             return Err(AnalysisError::InvalidDependencyGraph {
@@ -176,7 +209,7 @@ impl SemanticAnalyzer {
         let execution_order = dependency_graph.topological_sort()?;
 
         for &analyzer_index in &execution_order {
-            let analyzer = &mut self.phase_analyzers[analyzer_index];
+            let analyzer = &self.phase_analyzers[analyzer_index];
 
             // Check timeout
             if context.elapsed_time() > options.phase_timeout {
@@ -189,7 +222,7 @@ impl SemanticAnalyzer {
             // Execute the analyzer
             let phase_result = analyzer.analyze(schema, context);
             let has_fatal = phase_result.has_fatal_errors();
-            self.diagnostic_collector.extend(phase_result.diagnostics);
+            diagnostic_collector.extend(phase_result.diagnostics);
 
             // Stop on fatal errors if configured
             if has_fatal
@@ -199,7 +232,7 @@ impl SemanticAnalyzer {
             }
 
             // Stop if we've hit the diagnostic limit
-            if self.diagnostic_collector.len() >= options.max_diagnostics {
+            if diagnostic_collector.len() >= options.max_diagnostics {
                 break;
             }
         }
@@ -211,7 +244,7 @@ impl SemanticAnalyzer {
     fn analyze_parallel(
         &mut self,
         schema: &Schema,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
         options: &AnalyzerOptions,
     ) -> Result<(), AnalysisError> {
         let Some(dependency_graph) = self.dependency_graph.as_ref() else {
@@ -292,14 +325,14 @@ impl SemanticAnalyzer {
     fn execute_layer_parallel(
         &mut self,
         schema: &Schema,
-        context: &mut AnalysisContext,
+        context: &AnalysisContext,
         options: &AnalyzerOptions,
         layer: &[usize],
     ) -> Result<(), AnalysisError> {
         if layer.len() == 1 {
             // Single analyzer - no need for threading overhead
             let analyzer_index = layer[0];
-            let analyzer = &mut self.phase_analyzers[analyzer_index];
+            let analyzer = &self.phase_analyzers[analyzer_index];
 
             // Check timeout
             if context.elapsed_time() > options.phase_timeout {
@@ -328,35 +361,83 @@ impl SemanticAnalyzer {
             return Ok(());
         }
 
-        // Multiple analyzers - execute in parallel
-        // Note: Due to Rust's ownership model and the fact that analyzers need mutable access,
-        // we'll need to restructure this to work with the current analyzer design.
-        // For now, fall back to sequential execution for layers with multiple analyzers.
-        for &analyzer_index in layer {
-            let analyzer = &mut self.phase_analyzers[analyzer_index];
+        // Multiple analyzers - check if any support parallel execution
+        let parallel_analyzers: Vec<_> = layer
+            .iter()
+            .filter(|&&index| {
+                self.phase_analyzers[index].supports_parallel_execution()
+            })
+            .copied()
+            .collect();
 
-            // Check timeout
-            if context.elapsed_time() > options.phase_timeout {
-                return Err(AnalysisError::Timeout {
-                    phase: analyzer.phase_name().to_string(),
-                    elapsed: context.elapsed_time(),
-                });
+        let (max_threads, threshold) = match options.concurrency {
+            ConcurrencyMode::Sequential => (1, 0),
+            ConcurrencyMode::Concurrent {
+                max_threads,
+                threshold,
+            } => (max_threads, threshold),
+        };
+
+        if parallel_analyzers.len() > threshold && parallel_analyzers.len() > 1
+        {
+            // Execute parallel analyzers - for now implemented sequentially
+            // TODO: Implement true parallelism using scoped threads when data ownership is resolved
+            for &analyzer_index in &parallel_analyzers {
+                // Check timeout
+                if context.elapsed_time() > options.phase_timeout {
+                    return Err(AnalysisError::Timeout {
+                        phase: self.phase_analyzers[analyzer_index]
+                            .phase_name()
+                            .to_string(),
+                        elapsed: context.elapsed_time(),
+                    });
+                }
+
+                let analyzer = &self.phase_analyzers[analyzer_index];
+                let phase_result = analyzer.analyze(schema, context);
+                self.diagnostic_collector.extend(phase_result.diagnostics);
             }
 
-            let phase_result = analyzer.analyze(schema, context);
-            let has_fatal = phase_result.has_fatal_errors();
-            self.diagnostic_collector.extend(phase_result.diagnostics);
+            // Execute remaining non-parallel analyzers sequentially
+            let sequential_analyzers: Vec<_> = layer
+                .iter()
+                .filter(|&&index| !parallel_analyzers.contains(&index))
+                .copied()
+                .collect();
 
-            // Stop on fatal errors if configured
-            if has_fatal
-                && matches!(options.validation_mode, ValidationMode::Strict)
-            {
-                return Ok(());
+            for &analyzer_index in &sequential_analyzers {
+                let analyzer = &self.phase_analyzers[analyzer_index];
+                let phase_result = analyzer.analyze(schema, context);
+                self.diagnostic_collector.extend(phase_result.diagnostics);
             }
+        } else {
+            // No parallel analyzers or only one - fall back to sequential
+            for &analyzer_index in layer {
+                let analyzer = &self.phase_analyzers[analyzer_index];
 
-            // Check diagnostic limit
-            if self.diagnostic_collector.len() >= options.max_diagnostics {
-                return Ok(());
+                // Check timeout
+                if context.elapsed_time() > options.phase_timeout {
+                    return Err(AnalysisError::Timeout {
+                        phase: analyzer.phase_name().to_string(),
+                        elapsed: context.elapsed_time(),
+                    });
+                }
+
+                let phase_result = analyzer.analyze(schema, context);
+                let has_fatal = phase_result.has_fatal_errors();
+                self.diagnostic_collector.extend(phase_result.diagnostics);
+
+                // Stop on fatal errors if configured
+                if has_fatal
+                    && matches!(options.validation_mode, ValidationMode::Strict)
+                {
+                    return Ok(());
+                }
+
+                // Check diagnostic limit
+                if self.diagnostic_collector.len() >= options.max_diagnostics {
+                    return Ok(());
+                }
             }
         }
 
@@ -923,7 +1004,7 @@ mod tests {
         let mut sa_b = SemanticAnalyzer::new();
         let schema = empty_schema();
         let mut opts_a = AnalyzerOptions::default();
-        opts_a.features.enable_parallelism = false;
+        opts_a.concurrency = ConcurrencyMode::Sequential;
         let opts_b = AnalyzerOptions::default();
         let res_a = match sa_a.analyze(&schema, &opts_a) {
             Ok(v) => v,

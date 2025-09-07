@@ -8,15 +8,27 @@ use crate::core::semantic_analyzer::{
     symbol_table::SymbolTable, type_resolver::TypeResolver,
 };
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Shared context for semantic analysis phases.
 ///
 /// The analysis context provides shared state, utilities, and metadata
-/// collection for all analyzers in the pipeline.
+/// collection for all analyzers in the pipeline. State is shared via
+/// thread-safe reference counting and read-write locks to support both
+/// sequential and parallel execution.
 #[derive(Debug)]
 pub struct AnalysisContext {
     options: AnalyzerOptions,
+
+    /// Shared symbol table across all phases
+    pub symbol_table: Arc<RwLock<SymbolTable>>,
+
+    /// Shared type resolver across all phases
+    pub type_resolver: Arc<RwLock<TypeResolver>>,
+
+    /// Shared relationship graph across all phases
+    pub relationship_graph: Arc<RwLock<RelationshipGraph>>,
 
     /// Current scope stack for symbol resolution
     current_scope: ScopeStack,
@@ -36,12 +48,52 @@ pub struct AnalysisContext {
     type_resolution_stack: Vec<String>,
 }
 
+/// Relationship graph for tracking model relationships.
+#[derive(Debug, Clone, Default)]
+pub struct RelationshipGraph {
+    /// All relationships indexed by ID
+    pub relationships: HashMap<String, Relationship>,
+
+    /// Relationships by source model
+    pub model_relationships: HashMap<String, Vec<String>>,
+}
+
+/// Represents a relationship between two models.
+#[derive(Debug, Clone)]
+pub struct Relationship {
+    pub id: String,
+    pub from_model: String,
+    pub from_field: String,
+    pub to_model: String,
+    pub to_field: Option<String>,
+    pub relationship_type: RelationshipType,
+    pub foreign_keys: Vec<String>,
+    pub references: Vec<String>,
+}
+
+/// Type of relationship between models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipType {
+    OneToOne,
+    OneToMany,
+    ManyToOne,
+    ManyToMany,
+}
+
 impl AnalysisContext {
-    /// Create a new analysis context.
+    /// Create a new analysis context with shared state.
     #[must_use]
-    pub fn new(options: &AnalyzerOptions) -> Self {
+    pub fn new(
+        options: &AnalyzerOptions,
+        symbol_table: Arc<RwLock<SymbolTable>>,
+        type_resolver: Arc<RwLock<TypeResolver>>,
+        relationship_graph: Arc<RwLock<RelationshipGraph>>,
+    ) -> Self {
         Self {
             options: options.clone(),
+            symbol_table,
+            type_resolver,
+            relationship_graph,
             current_scope: ScopeStack::new(),
             metadata: AnalysisMetadata::new(),
             start_time: Instant::now(),
@@ -50,6 +102,18 @@ impl AnalysisContext {
             current_enum: None,
             type_resolution_stack: Vec::new(),
         }
+    }
+
+    /// Create a test context with default shared state for unit tests.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new_test(options: &AnalyzerOptions) -> Self {
+        Self::new(
+            options,
+            Arc::new(RwLock::new(SymbolTable::new())),
+            Arc::new(RwLock::new(TypeResolver::new())),
+            Arc::new(RwLock::new(RelationshipGraph::default())),
+        )
     }
 
     /// Get the analysis options.
@@ -528,18 +592,22 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
-                enable_parallelism: false,
             },
+            concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_secs(30),
             target_provider: Some(DatabaseProvider::PostgreSQL),
             max_diagnostics: 100,
         }
     }
 
+    fn create_test_context(options: &AnalyzerOptions) -> AnalysisContext {
+        AnalysisContext::new_test(options)
+    }
+
     #[test]
     fn test_analysis_context_creation() {
         let options = create_test_options();
-        let context = AnalysisContext::new(&options);
+        let context = create_test_context(&options);
 
         assert!(context.current_model().is_none());
         assert!(context.current_field().is_none());
@@ -610,7 +678,7 @@ mod tests {
     #[test]
     fn test_model_field_enum_context() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         // Test model context
         assert!(context.current_model().is_none());
@@ -640,7 +708,7 @@ mod tests {
     #[test]
     fn test_type_resolution_stack() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         // Initially empty
         assert!(context.type_resolution_stack().is_empty());
@@ -675,7 +743,7 @@ mod tests {
     #[test]
     fn test_metadata_recording() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         // Record various metadata
         context.record_metadata(
@@ -702,7 +770,7 @@ mod tests {
     #[test]
     fn test_metadata_extraction() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         context.record_metadata(
             "test_metric".to_string(),
@@ -722,7 +790,7 @@ mod tests {
     fn test_analyzer_options_defaults() {
         let options = create_test_options();
         assert_eq!(options.validation_mode, ValidationMode::Lenient);
-        assert!(!options.features.enable_parallelism);
+        // Parallelism moved to options.concurrency
         assert_eq!(options.phase_timeout, Duration::from_secs(30));
         assert_eq!(options.max_diagnostics, 100);
     }
@@ -734,19 +802,19 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
-                enable_parallelism: false,
             },
+            concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_secs(60),
             target_provider: Some(DatabaseProvider::SQLite),
             max_diagnostics: 50,
         };
 
         assert_eq!(options.validation_mode, ValidationMode::Lenient);
-        assert!(!options.features.enable_parallelism);
+        // Parallelism moved to options.concurrency
         assert_eq!(options.phase_timeout, Duration::from_secs(60));
         assert_eq!(options.max_diagnostics, 50);
 
-        let context = AnalysisContext::new(&options);
+        let context = create_test_context(&options);
         assert_eq!(context.options().validation_mode, ValidationMode::Lenient);
         assert_eq!(context.options().max_diagnostics, 50);
     }
@@ -767,7 +835,7 @@ mod tests {
     #[test]
     fn test_scope_creation_and_properties() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         // Enter multiple scopes
         context.enter_scope(ScopeType::Model, "User".to_string());
@@ -804,14 +872,14 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
-                enable_parallelism: false,
             },
+            concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_nanos(1), // Very short timeout
             target_provider: Some(DatabaseProvider::PostgreSQL),
             max_diagnostics: 100,
         };
 
-        let context = AnalysisContext::new(&options);
+        let context = create_test_context(&options);
 
         // Sleep briefly to exceed timeout
         std::thread::sleep(Duration::from_millis(1));
@@ -860,7 +928,7 @@ mod tests {
     #[test]
     fn test_complex_scenario() {
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new(&options);
+        let mut context = create_test_context(&options);
 
         // Simulate complex analysis scenario
         context.enter_scope(ScopeType::Model, "User".to_string());

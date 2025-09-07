@@ -1352,9 +1352,8 @@ mod tests {
             span: test_span(),
         });
 
-        let resolved =
-            resolver.resolve_type(&list_type, &symbol_table).unwrap();
-        assert!(matches!(resolved, ResolvedType::List(_)));
+        let result = resolver.resolve_type(&list_type, &symbol_table).unwrap();
+        assert!(matches!(result, ResolvedType::List(_)));
 
         // Test nested list
         let nested_list = TypeRef::List(ListType {
