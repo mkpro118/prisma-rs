@@ -249,6 +249,7 @@ mod tests {
         let options = AnalyzerOptions {
             validation_mode: ValidationMode::Strict,
             features: features.clone(),
+            concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_secs(60),
             target_provider: Some(DatabaseProvider::PostgreSQL),
             max_diagnostics: 200,
@@ -287,6 +288,7 @@ mod tests {
                     performance_warnings: true,
                     enable_parallelism: true,
                 },
+                concurrency: ConcurrencyMode::Sequential,
                 phase_timeout: Duration::from_secs(30),
                 target_provider: provider,
                 max_diagnostics: 100,

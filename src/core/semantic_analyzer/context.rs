@@ -7,6 +7,9 @@ use crate::core::semantic_analyzer::{
     AnalyzerOptions, diagnostics::SemanticDiagnostic,
     symbol_table::SymbolTable, type_resolver::TypeResolver,
 };
+
+#[cfg(test)]
+use crate::core::semantic_analyzer::ConcurrencyMode;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -592,6 +595,7 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
+                enable_parallelism: true,
             },
             concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_secs(30),
@@ -802,6 +806,7 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
+                enable_parallelism: true,
             },
             concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_secs(60),
@@ -817,19 +822,6 @@ mod tests {
         let context = create_test_context(&options);
         assert_eq!(context.options().validation_mode, ValidationMode::Lenient);
         assert_eq!(context.options().max_diagnostics, 50);
-    }
-
-    #[test]
-    fn test_scope_type_variants() {
-        // Test that all ScopeType variants exist and work
-        let _model_scope = ScopeType::Model;
-        let _enum_scope = ScopeType::Enum;
-        let _datasource_scope = ScopeType::Datasource;
-        let _generator_scope = ScopeType::Generator;
-
-        // Test Debug trait
-        let model_debug = format!("{:?}", ScopeType::Model);
-        assert!(model_debug.contains("Model"));
     }
 
     #[test]
@@ -872,6 +864,7 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: false,
+                enable_parallelism: true,
             },
             concurrency: ConcurrencyMode::Sequential,
             phase_timeout: Duration::from_nanos(1), // Very short timeout
@@ -980,7 +973,7 @@ mod tests {
         );
         metadata.add_entry(
             "float_val".to_string(),
-            AnalysisMetadataValue::Float(3.14),
+            AnalysisMetadataValue::Float(5.5),
         );
         metadata.add_entry(
             "bool_val".to_string(),
@@ -1123,6 +1116,8 @@ mod tests {
 
     #[test]
     fn test_analysis_result_comprehensive() {
+        use crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity;
+
         let symbol_table = SymbolTable::new();
         let type_resolver = TypeResolver::new();
         let mut metadata = AnalysisMetadata::new();
@@ -1178,7 +1173,6 @@ mod tests {
         assert_eq!(analysis_result.info_count(), 1);
 
         // Test diagnostics by severity
-        use crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity;
         let errors =
             analysis_result.diagnostics_by_severity(DiagnosticSeverity::Error);
         let warnings = analysis_result
@@ -1226,8 +1220,8 @@ mod tests {
         assert_ne!(int_val1, int_val3);
         assert_ne!(string_val1, int_val1); // Different types
 
-        let float_val1 = AnalysisMetadataValue::Float(3.14);
-        let float_val2 = AnalysisMetadataValue::Float(3.14);
+        let float_val1 = AnalysisMetadataValue::Float(10.5);
+        let float_val2 = AnalysisMetadataValue::Float(10.5);
         assert_eq!(float_val1, float_val2);
 
         let bool_val1 = AnalysisMetadataValue::Boolean(true);
@@ -1354,17 +1348,6 @@ mod tests {
         // Test equality
         assert_eq!(ScopeType::Model, ScopeType::Model);
         assert_ne!(ScopeType::Model, ScopeType::Enum);
-
-        // Test all variants exist
-        let _variants = [
-            ScopeType::Global,
-            ScopeType::Model,
-            ScopeType::Enum,
-            ScopeType::Datasource,
-            ScopeType::Generator,
-            ScopeType::Field,
-            ScopeType::EnumValue,
-        ];
 
         // Test Debug formatting
         assert_eq!(format!("{:?}", ScopeType::Global), "Global");

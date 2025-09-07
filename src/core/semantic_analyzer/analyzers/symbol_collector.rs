@@ -11,6 +11,9 @@ use crate::core::semantic_analyzer::{
     traits::PhaseAnalyzer,
 };
 
+#[cfg(test)]
+use crate::core::semantic_analyzer::ConcurrencyMode;
+
 /// Reserved keywords that cannot be used as identifiers.
 const RESERVED_KEYWORDS: &[&str] = &[
     "model",
@@ -384,10 +387,10 @@ mod tests {
             declarations: vec![],
             span: sp((1, 1), (1, 1)),
         };
-        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let analyzer = SymbolCollectionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut ctx = AnalysisContext::new_test(&options);
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let ctx = AnalysisContext::new_test(&options);
+        let result = analyzer.analyze(&schema, &ctx);
         assert!(!result.diagnostics.is_empty());
         assert!(result
             .diagnostics
@@ -425,9 +428,9 @@ mod tests {
             ],
             span: sp((1, 1), (3, 1)),
         };
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
         // Expect MissingField diagnostics
         assert!(
             result
@@ -466,12 +469,13 @@ mod tests {
         };
 
         // Experimental disabled
-        let mut analyzer = SymbolCollectionAnalyzer::new();
+        let analyzer = SymbolCollectionAnalyzer::new();
         let options = AnalyzerOptions {
             validation_mode: AnalyzerOptions::default().validation_mode,
             features: FeatureOptions {
                 validate_experimental: false,
                 performance_warnings: true,
+                enable_parallelism: true,
             },
             concurrency: ConcurrencyMode::Concurrent {
                 max_threads: 4,
@@ -481,8 +485,8 @@ mod tests {
             target_provider: None,
             max_diagnostics: 100,
         };
-        let mut ctx = AnalysisContext::new_test(&options);
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let ctx = AnalysisContext::new_test(&options);
+        let result = analyzer.analyze(&schema, &ctx);
         assert!(
             result
                 .diagnostics
@@ -492,9 +496,9 @@ mod tests {
         );
 
         // Experimental enabled
-        let mut analyzer2 = SymbolCollectionAnalyzer::new();
-        let mut ctx2 = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result2 = analyzer2.analyze(&schema, &mut ctx2);
+        let analyzer2 = SymbolCollectionAnalyzer::new();
+        let ctx2 = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result2 = analyzer2.analyze(&schema, &ctx2);
         assert!(
             result2
                 .diagnostics
@@ -630,9 +634,9 @@ mod tests {
             span: sp((1, 1), (3, 1)),
         };
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         // Should not have any identifier validation errors
         assert!(
@@ -690,9 +694,9 @@ mod tests {
             span: sp((1, 1), (4, 1)),
         };
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         // Should not have identifier validation errors for valid enum values
         assert!(
@@ -744,9 +748,9 @@ mod tests {
             span: sp((1, 1), (4, 1)),
         };
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         // Should not have missing field errors
         assert!(
@@ -785,9 +789,9 @@ mod tests {
             span: sp((1, 1), (3, 1)),
         };
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         // Should not have missing field errors
         assert!(
@@ -958,9 +962,9 @@ mod tests {
     fn test_complex_schema_with_all_declaration_types() {
         let schema = create_complex_test_schema();
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         assert_no_problematic_diagnostics(&result.diagnostics);
     }
@@ -1053,9 +1057,9 @@ mod tests {
             span: sp((1, 1), (6, 1)),
         };
 
-        let mut analyzer = SymbolCollectionAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = SymbolCollectionAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         // Should not have missing datasource warning
         assert!(!result.diagnostics.iter().any(|d|

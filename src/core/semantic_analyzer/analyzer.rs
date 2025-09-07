@@ -135,6 +135,10 @@ impl SemanticAnalyzer {
     /// - Circular dependencies are detected
     /// - Analysis times out
     /// - Invalid dependency graph structure is encountered
+    ///
+    /// # Panics
+    ///
+    /// Panics if the symbol table write lock is poisoned due to a panic in another thread.
     pub fn analyze(
         &mut self,
         schema: &Schema,
@@ -149,10 +153,23 @@ impl SemanticAnalyzer {
 
         // Clear previous results
         self.diagnostic_collector.clear();
-        *self.symbol_table.write().unwrap() = SymbolTable::new();
-        *self.type_resolver.write().unwrap() = TypeResolver::new();
-        *self.relationship_graph.write().unwrap() =
-            RelationshipGraph::default();
+        *self.symbol_table.write().map_err(|e| {
+            AnalysisError::InvalidDependencyGraph {
+                message: format!("Failed to acquire symbol table lock: {e}"),
+            }
+        })? = SymbolTable::new();
+        *self.type_resolver.write().map_err(|e| {
+            AnalysisError::InvalidDependencyGraph {
+                message: format!("Failed to acquire type resolver lock: {e}"),
+            }
+        })? = TypeResolver::new();
+        *self.relationship_graph.write().map_err(|e| {
+            AnalysisError::InvalidDependencyGraph {
+                message: format!(
+                    "Failed to acquire relationship graph lock: {e}"
+                ),
+            }
+        })? = RelationshipGraph::default();
 
         // Create analysis context with shared state
         let context = AnalysisContext::new(
@@ -184,8 +201,22 @@ impl SemanticAnalyzer {
 
         // Build final result
         Ok(AnalysisResult {
-            symbol_table: (*self.symbol_table.read().unwrap()).clone(),
-            type_resolver: (*self.type_resolver.read().unwrap()).clone(),
+            symbol_table: (*self.symbol_table.read().map_err(|e| {
+                AnalysisError::InvalidDependencyGraph {
+                    message: format!(
+                        "Failed to acquire symbol table read lock: {e}"
+                    ),
+                }
+            })?)
+            .clone(),
+            type_resolver: (*self.type_resolver.read().map_err(|e| {
+                AnalysisError::InvalidDependencyGraph {
+                    message: format!(
+                        "Failed to acquire type resolver read lock: {e}"
+                    ),
+                }
+            })?)
+            .clone(),
             diagnostics: self.diagnostic_collector.clone().take_all(),
             analysis_metadata: context.take_metadata(),
             analysis_time,
@@ -370,7 +401,7 @@ impl SemanticAnalyzer {
             .copied()
             .collect();
 
-        let (max_threads, threshold) = match options.concurrency {
+        let (_max_threads, threshold) = match options.concurrency {
             ConcurrencyMode::Sequential => (1, 0),
             ConcurrencyMode::Concurrent {
                 max_threads,
@@ -769,7 +800,6 @@ impl std::fmt::Display for AnalysisError {
 impl std::error::Error for AnalysisError {}
 
 #[cfg(test)]
-#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::core::parser::ast::Schema;
@@ -800,9 +830,9 @@ mod tests {
         }
 
         fn analyze(
-            &mut self,
+            &self,
             _schema: &Schema,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> PhaseResult {
             PhaseResult::new(Vec::new())
         }
@@ -876,9 +906,9 @@ mod tests {
             "fatal-phase"
         }
         fn analyze(
-            &mut self,
+            &self,
             _schema: &Schema,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> PhaseResult {
             PhaseResult::error(SemanticDiagnostic::error(
                 crate::core::scanner::tokens::SymbolSpan {
@@ -903,9 +933,9 @@ mod tests {
             "warn-phase"
         }
         fn analyze(
-            &mut self,
+            &self,
             _schema: &Schema,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> PhaseResult {
             PhaseResult::new(vec![SemanticDiagnostic::warning(
                 crate::core::scanner::tokens::SymbolSpan {
@@ -1003,8 +1033,10 @@ mod tests {
         let mut sa_a = SemanticAnalyzer::new();
         let mut sa_b = SemanticAnalyzer::new();
         let schema = empty_schema();
-        let mut opts_a = AnalyzerOptions::default();
-        opts_a.concurrency = ConcurrencyMode::Sequential;
+        let opts_a = AnalyzerOptions {
+            concurrency: ConcurrencyMode::Sequential,
+            ..AnalyzerOptions::default()
+        };
         let opts_b = AnalyzerOptions::default();
         let res_a = match sa_a.analyze(&schema, &opts_a) {
             Ok(v) => v,

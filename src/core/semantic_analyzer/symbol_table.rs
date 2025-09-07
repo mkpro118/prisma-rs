@@ -1243,7 +1243,7 @@ mod tests {
         };
 
         // Test that it implements std::error::Error
-        let _error_trait: &dyn std::error::Error = &error;
+        let _: &dyn std::error::Error = &error;
     }
 
     #[test]

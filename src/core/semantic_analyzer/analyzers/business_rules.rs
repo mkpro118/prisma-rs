@@ -144,7 +144,7 @@ impl BusinessRuleAnalyzer {
 
     /// Analyze all business rules using data from previous phases.
     /// TODO: Remove AST traversal and use data from shared context instead
-    fn analyze_schema_business_rules(
+    pub fn analyze_schema_business_rules(
         &mut self,
         schema: &Schema,
         context: &AnalysisContext,
@@ -168,7 +168,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// TODO: Remove this method - data should come from shared context
-    fn collect_schema_information(&mut self, schema: &Schema) {
+    pub fn collect_schema_information(&mut self, schema: &Schema) {
         for declaration in &schema.declarations {
             match declaration {
                 Declaration::Model(model) => {
@@ -195,7 +195,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Collect information about a single model.
-    fn collect_model_information(
+    pub fn collect_model_information(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
     ) {
@@ -290,7 +290,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Validate database integrity rules using shared context.
-    fn validate_database_integrity_rules(
+    pub fn validate_database_integrity_rules(
         &self,
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -359,7 +359,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Validate performance-related rules using shared context.
-    fn validate_performance_rules(
+    pub fn validate_performance_rules(
         &self,
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -396,7 +396,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Validate relationship depth for performance.
-    fn validate_relationship_depth(
+    pub fn validate_relationship_depth(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -458,7 +458,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Validate security-related rules using shared context.
-    fn validate_security_rules(
+    pub fn validate_security_rules(
         &self,
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -493,7 +493,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Validate data modeling best practices using shared context.
-    fn validate_data_modeling_rules(
+    pub fn validate_data_modeling_rules(
         &self,
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -514,7 +514,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Detect circular relationships in the schema.
-    fn detect_circular_relationships(
+    pub fn detect_circular_relationships(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -557,7 +557,10 @@ impl BusinessRuleAnalyzer {
     }
 
     /// Suggest audit fields for important models.
-    fn suggest_audit_fields(&self, diagnostics: &mut Vec<SemanticDiagnostic>) {
+    pub fn suggest_audit_fields(
+        &self,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
         for model_info in self.model_info.values() {
             // Suggest audit fields for important business models
             if model_info.name.to_lowercase().contains("order")
@@ -663,8 +666,8 @@ impl PhaseAnalyzer for BusinessRuleAnalyzer {
 
     fn analyze(
         &self,
-        schema: &Schema,
-        context: &AnalysisContext,
+        _schema: &Schema,
+        _context: &AnalysisContext,
     ) -> PhaseResult {
         let diagnostics = Vec::new();
 
@@ -725,7 +728,7 @@ mod tests {
                 "attribute-validation"
             ]
         );
-        assert!(!analyzer.supports_parallel_execution());
+        assert!(analyzer.supports_parallel_execution());
         assert!(analyzer.config().require_primary_keys);
     }
 
@@ -766,11 +769,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Empty schema should not have business rule violations
         assert!(result.diagnostics.is_empty());
@@ -805,11 +808,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect missing primary key
         assert!(!result.diagnostics.is_empty());
@@ -835,11 +838,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect empty model
         assert!(!result.diagnostics.is_empty());
@@ -889,11 +892,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should not have primary key errors
         let has_primary_key_error = result
@@ -945,11 +948,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect security issue with User model lacking primary key
         assert!(!result.diagnostics.is_empty());
@@ -996,13 +999,15 @@ mod tests {
         };
 
         // Use custom config with low max field limit to trigger warning
-        let mut config = BusinessRuleConfig::default();
-        config.max_model_fields = Some(10);
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let config = BusinessRuleConfig {
+            max_model_fields: Some(10),
+            ..BusinessRuleConfig::default()
+        };
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect field count issue (15 fields > 10 limit)
         assert!(!result.diagnostics.is_empty());
@@ -1042,14 +1047,16 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut config = BusinessRuleConfig::default();
-        config.enforce_naming_conventions = true;
+        let config = BusinessRuleConfig {
+            enforce_naming_conventions: true,
+            ..BusinessRuleConfig::default()
+        };
 
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have some diagnostic (at minimum missing primary key)
         assert!(!result.diagnostics.is_empty());
@@ -1108,11 +1115,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have diagnostics (SQLite field limit warning + missing primary key)
         assert!(!result.diagnostics.is_empty());
@@ -1209,14 +1216,16 @@ mod tests {
         };
 
         // Test with require_primary_keys disabled
-        let mut config = BusinessRuleConfig::default();
-        config.require_primary_keys = false;
+        let config = BusinessRuleConfig {
+            require_primary_keys: false,
+            ..BusinessRuleConfig::default()
+        };
 
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // With primary key requirement disabled, should have fewer errors
         let primary_key_errors = result
@@ -1231,7 +1240,7 @@ mod tests {
     fn test_analyzer_phase_methods() {
         let analyzer = BusinessRuleAnalyzer::new();
         assert_eq!(analyzer.phase_name(), "business-rules");
-        assert!(!analyzer.supports_parallel_execution());
+        assert!(analyzer.supports_parallel_execution());
         assert_eq!(
             analyzer.dependencies(),
             &[
@@ -1320,11 +1329,11 @@ mod tests {
         config
             .enabled_categories
             .remove(&BusinessRuleCategory::Performance);
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should not have performance warnings when Performance category is disabled
         let has_performance_warning = result
@@ -1447,11 +1456,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect circular relationships
         let has_cycle_warning = result.diagnostics.iter().any(|d| {
@@ -1515,11 +1524,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should suggest audit fields for business-critical models
         let has_audit_suggestion = result.diagnostics.iter().any(|d| {
@@ -1566,11 +1575,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should warn about missing indexes on foreign keys
         let has_index_warning = result.diagnostics.iter().any(|d| {
@@ -1595,13 +1604,15 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut config = BusinessRuleConfig::default();
-        config.min_model_fields = Some(2); // Require at least 2 fields
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let config = BusinessRuleConfig {
+            min_model_fields: Some(2), // Require at least 2 fields
+            ..BusinessRuleConfig::default()
+        };
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have both empty model error and min field warning
         let has_empty_error = result.diagnostics.iter().any(|d| {
@@ -1648,11 +1659,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        analyzer.analyze(&schema, &mut context);
+        analyzer.analyze(&schema, &context);
 
         // Test the model_info accessor
         let model_info = analyzer.model_info();
@@ -1714,11 +1725,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // MySQL provider rules should be invoked (currently no specific rules, so just basic validation)
         assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
@@ -1771,11 +1782,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // PostgreSQL provider rules should be invoked
         assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
@@ -1828,11 +1839,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // MongoDB provider rules should be invoked
         assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
@@ -1885,11 +1896,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should handle unknown provider gracefully (no provider-specific rules)
         assert!(!result.diagnostics.is_empty()); // Should at least have missing primary key error
@@ -1931,11 +1942,11 @@ mod tests {
             .enabled_categories
             .insert(BusinessRuleCategory::DatabaseIntegrity);
 
-        let mut analyzer = BusinessRuleAnalyzer::with_config(config);
+        let analyzer = BusinessRuleAnalyzer::with_config(config);
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should only have database integrity errors (missing primary key)
         // Security rules should be disabled
@@ -2002,11 +2013,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should NOT warn about missing indexes since the field has @unique (which creates an index)
         let has_index_warning = result
@@ -2099,11 +2110,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should handle self-referencing models without infinite recursion
         // The implementation should prevent infinite loops with the visited set
@@ -2150,11 +2161,11 @@ mod tests {
                 span: create_test_span(),
             };
 
-            let mut analyzer = BusinessRuleAnalyzer::new();
+            let analyzer = BusinessRuleAnalyzer::new();
             let options = AnalyzerOptions::default();
-            let mut context = AnalysisContext::new_test(&options);
+            let context = AnalysisContext::new_test(&options);
 
-            let result = analyzer.analyze(&schema, &mut context);
+            let result = analyzer.analyze(&schema, &context);
 
             let has_audit_suggestion = result
                 .diagnostics

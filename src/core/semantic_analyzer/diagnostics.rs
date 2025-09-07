@@ -1267,8 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_diagnostic_codes_category() {
-        // Symbol Resolution category
+    fn test_symbol_resolution_category() {
         assert_eq!(
             DiagnosticCode::UndeclaredIdentifier.category(),
             DiagnosticCategory::SymbolResolution
@@ -1301,8 +1300,10 @@ mod tests {
             DiagnosticCode::ExperimentalFeature.category(),
             DiagnosticCategory::SymbolResolution
         );
+    }
 
-        // Type System category
+    #[test]
+    fn test_type_system_category() {
         assert_eq!(
             DiagnosticCode::TypeMismatch.category(),
             DiagnosticCategory::TypeSystem
@@ -1335,8 +1336,10 @@ mod tests {
             DiagnosticCode::IncompatibleTypes.category(),
             DiagnosticCategory::TypeSystem
         );
+    }
 
-        // Relationships category
+    #[test]
+    fn test_relationships_category() {
         assert_eq!(
             DiagnosticCode::InvalidRelation.category(),
             DiagnosticCategory::Relationships
@@ -1357,8 +1360,10 @@ mod tests {
             DiagnosticCode::RelationshipCycle.category(),
             DiagnosticCategory::Relationships
         );
+    }
 
-        // Attributes category
+    #[test]
+    fn test_attributes_category() {
         assert_eq!(
             DiagnosticCode::UnknownAttribute.category(),
             DiagnosticCategory::Attributes
@@ -1379,8 +1384,10 @@ mod tests {
             DiagnosticCode::AttributeNotApplicable.category(),
             DiagnosticCategory::Attributes
         );
+    }
 
-        // Business Rules category
+    #[test]
+    fn test_business_rules_category() {
         assert_eq!(
             DiagnosticCode::MissingPrimaryKey.category(),
             DiagnosticCategory::BusinessRules
@@ -1397,8 +1404,10 @@ mod tests {
             DiagnosticCode::DeprecatedFeature.category(),
             DiagnosticCategory::BusinessRules
         );
+    }
 
-        // Performance category
+    #[test]
+    fn test_performance_category() {
         assert_eq!(
             DiagnosticCode::PerformanceWarning.category(),
             DiagnosticCategory::Performance
@@ -1411,8 +1420,10 @@ mod tests {
             DiagnosticCode::QueryOptimizationHint.category(),
             DiagnosticCategory::Performance
         );
+    }
 
-        // Schema Structure category
+    #[test]
+    fn test_schema_structure_category() {
         assert_eq!(
             DiagnosticCode::InvalidSchemaStructure.category(),
             DiagnosticCategory::SchemaStructure
@@ -1433,8 +1444,10 @@ mod tests {
             DiagnosticCode::MissingDatasource.category(),
             DiagnosticCategory::SchemaStructure
         );
+    }
 
-        // Internal category
+    #[test]
+    fn test_internal_category() {
         assert_eq!(
             DiagnosticCode::InternalError.category(),
             DiagnosticCategory::Internal

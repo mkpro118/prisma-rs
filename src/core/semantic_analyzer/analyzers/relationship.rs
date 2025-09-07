@@ -46,7 +46,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Analyze all relationships in the schema.
-    fn analyze_schema_relationships(
+    pub fn analyze_schema_relationships(
         &mut self,
         schema: &Schema,
         _context: &AnalysisContext,
@@ -64,7 +64,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Analyze relationships for a single model.
-    fn analyze_model_relationships(
+    pub fn analyze_model_relationships(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -77,7 +77,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Analyze relationships for a single field.
-    fn analyze_field_relationships(
+    pub fn analyze_field_relationships(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
         field: &crate::core::parser::ast::FieldDecl,
@@ -98,7 +98,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Analyze a single `@relation` attribute.
-    fn analyze_relation_attribute(
+    pub fn analyze_relation_attribute(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
         field: &crate::core::parser::ast::FieldDecl,
@@ -314,7 +314,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate consistency of all relationships.
-    fn validate_relationship_consistency(
+    pub fn validate_relationship_consistency(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -329,7 +329,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that relationships have proper back-references.
-    fn validate_back_references(
+    pub fn validate_back_references(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -383,7 +383,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that there are no conflicting relationship definitions.
-    fn validate_relationship_conflicts(
+    pub fn validate_relationship_conflicts(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -445,7 +445,7 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that foreign keys are consistent.
-    fn validate_foreign_key_consistency(
+    pub fn validate_foreign_key_consistency(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -637,8 +637,8 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
 
     fn analyze(
         &self,
-        schema: &Schema,
-        context: &AnalysisContext,
+        _schema: &Schema,
+        _context: &AnalysisContext,
     ) -> PhaseResult {
         let diagnostics = Vec::new();
 
@@ -662,7 +662,7 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
 
 /// Arguments parsed from a @relation attribute.
 #[derive(Debug, Clone)]
-struct RelationArguments {
+pub struct RelationArguments {
     /// Name of the relationship
     pub name: Option<String>,
 
@@ -833,11 +833,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = RelationshipAnalyzer::new();
+        let analyzer = RelationshipAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Empty schema should not have relationship errors
         assert!(result.diagnostics.is_empty());
@@ -873,11 +873,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = RelationshipAnalyzer::new();
+        let analyzer = RelationshipAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Model without relations should not have errors
         assert!(result.diagnostics.is_empty());
@@ -916,11 +916,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = RelationshipAnalyzer::new();
+        let analyzer = RelationshipAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Field without @relation attribute should not create relationships
         assert!(result.diagnostics.is_empty());
@@ -1079,9 +1079,9 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = RelationshipAnalyzer::new();
-        let mut ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
-        let result = analyzer.analyze(&schema, &mut ctx);
+        let analyzer = RelationshipAnalyzer::new();
+        let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
+        let result = analyzer.analyze(&schema, &ctx);
 
         assert!(result.diagnostics.is_empty());
 

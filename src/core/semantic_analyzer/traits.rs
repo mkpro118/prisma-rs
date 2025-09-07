@@ -10,6 +10,9 @@ use crate::core::semantic_analyzer::{
     diagnostics::SemanticDiagnostic,
 };
 
+#[cfg(test)]
+use crate::core::semantic_analyzer::ConcurrencyMode;
+
 /// Core trait for analysis phases.
 ///
 /// Each semantic analysis phase implements this trait to provide a standardized
@@ -268,9 +271,9 @@ mod tests {
         }
 
         fn analyze(
-            &mut self,
+            &self,
             _schema: &Schema,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> PhaseResult {
             PhaseResult::new(Vec::new())
         }
@@ -359,6 +362,7 @@ mod tests {
             features: FeatureOptions {
                 validate_experimental: true,
                 performance_warnings: true,
+                enable_parallelism: true,
             },
             concurrency: ConcurrencyMode::Concurrent {
                 max_threads: 4,
@@ -404,9 +408,9 @@ mod tests {
 
     impl DeclarationAnalyzer<String> for MockDeclarationAnalyzer {
         fn analyze_declaration(
-            &mut self,
+            &self,
             _decl: &String,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> Vec<SemanticDiagnostic> {
             Vec::new()
         }
@@ -428,9 +432,9 @@ mod tests {
 
     impl RelationshipAnalyzer for MockRelationshipAnalyzer {
         fn analyze_relationships(
-            &mut self,
+            &self,
             _schema: &Schema,
-            _context: &mut AnalysisContext,
+            _context: &AnalysisContext,
         ) -> Vec<SemanticDiagnostic> {
             Vec::new()
         }
@@ -456,7 +460,7 @@ mod tests {
 
     impl AttributeAnalyzer for MockAttributeAnalyzer {
         fn analyze_attribute(
-            &mut self,
+            &self,
             _attr: &FieldAttribute,
             _context: &AttributeContext,
         ) -> Vec<SemanticDiagnostic> {
@@ -543,18 +547,18 @@ mod tests {
 
     #[test]
     fn test_declaration_analyzer() {
-        let mut analyzer =
-            MockDeclarationAnalyzer::new("TestDeclarationAnalyzer");
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        let analyzer = MockDeclarationAnalyzer::new("TestDeclarationAnalyzer");
         assert_eq!(analyzer.analyzer_name(), "TestDeclarationAnalyzer");
 
         // Create a mock context for testing
-        use crate::core::semantic_analyzer::AnalyzerOptions;
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
         let test_declaration = String::from("test_model");
         let diagnostics =
-            analyzer.analyze_declaration(&test_declaration, &mut context);
+            analyzer.analyze_declaration(&test_declaration, &context);
         assert!(diagnostics.is_empty());
     }
 
@@ -564,7 +568,7 @@ mod tests {
         use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
         use crate::core::semantic_analyzer::AnalyzerOptions;
 
-        let mut analyzer =
+        let analyzer =
             MockRelationshipAnalyzer::new("TestRelationshipAnalyzer");
         assert_eq!(analyzer.analyzer_name(), "TestRelationshipAnalyzer");
 
@@ -576,9 +580,9 @@ mod tests {
             },
         };
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let diagnostics = analyzer.analyze_relationships(&schema, &mut context);
+        let diagnostics = analyzer.analyze_relationships(&schema, &context);
         assert!(diagnostics.is_empty());
     }
 
@@ -588,7 +592,7 @@ mod tests {
         use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
         use crate::core::semantic_analyzer::AnalyzerOptions;
 
-        let mut analyzer = MockAttributeAnalyzer::new(
+        let analyzer = MockAttributeAnalyzer::new(
             "TestAttributeAnalyzer",
             vec!["id", "default", "unique"],
         );
@@ -720,9 +724,9 @@ mod tests {
             }
 
             fn analyze(
-                &mut self,
+                &self,
                 _schema: &Schema,
-                _context: &mut AnalysisContext,
+                _context: &AnalysisContext,
             ) -> PhaseResult {
                 PhaseResult::new(Vec::new())
             }

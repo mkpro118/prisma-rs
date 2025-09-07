@@ -39,7 +39,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Resolve all type references in the schema.
-    fn resolve_schema_types(
+    pub fn resolve_schema_types(
         &mut self,
         schema: &Schema,
         context: &AnalysisContext,
@@ -59,7 +59,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Resolve types for all fields in a model.
-    fn resolve_model_types(
+    pub fn resolve_model_types(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
         context: &AnalysisContext,
@@ -73,7 +73,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Resolve the type of a single field.
-    fn resolve_field_type(
+    pub fn resolve_field_type(
         &mut self,
         field: &crate::core::parser::ast::FieldDecl,
         _context: &AnalysisContext,
@@ -108,7 +108,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Validate that a resolved type follows Prisma rules.
-    fn validate_resolved_type(
+    pub fn validate_resolved_type(
         resolved_type: &ResolvedType,
         type_ref: &TypeRef,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -134,7 +134,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Validate that a model reference is valid.
-    fn validate_model_reference(
+    pub fn validate_model_reference(
         model_name: &str,
         type_ref: &TypeRef,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -145,7 +145,7 @@ impl TypeResolutionAnalyzer {
     }
 
     /// Convert a type resolution error into a diagnostic.
-    fn add_type_resolution_error(
+    pub fn add_type_resolution_error(
         error: TypeResolutionError,
         span: &SymbolSpan,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -221,8 +221,8 @@ impl PhaseAnalyzer for TypeResolutionAnalyzer {
 
     fn analyze(
         &self,
-        schema: &Schema,
-        context: &AnalysisContext,
+        _schema: &Schema,
+        _context: &AnalysisContext,
     ) -> PhaseResult {
         let diagnostics = Vec::new();
 
@@ -305,11 +305,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have no errors for valid builtin types
         assert!(
@@ -349,11 +349,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have errors for unknown type
         assert!(!result.diagnostics.is_empty());
@@ -403,11 +403,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have error for nested lists
         assert!(!result.diagnostics.is_empty());
@@ -452,11 +452,11 @@ mod tests {
                 span: create_test_span(),
             };
 
-            let mut analyzer = TypeResolutionAnalyzer::new();
+            let analyzer = TypeResolutionAnalyzer::new();
             let options = AnalyzerOptions::default();
-            let mut context = AnalysisContext::new_test(&options);
+            let context = AnalysisContext::new_test(&options);
 
-            let result = analyzer.analyze(&schema, &mut context);
+            let result = analyzer.analyze(&schema, &context);
 
             // Should not have errors for valid builtin types
             let error_diagnostics: Vec<_> =
@@ -511,11 +511,11 @@ mod tests {
                 span: create_test_span(),
             };
 
-            let mut analyzer = TypeResolutionAnalyzer::new();
+            let analyzer = TypeResolutionAnalyzer::new();
             let options = AnalyzerOptions::default();
-            let mut context = AnalysisContext::new_test(&options);
+            let context = AnalysisContext::new_test(&options);
 
-            let result = analyzer.analyze(&schema, &mut context);
+            let result = analyzer.analyze(&schema, &context);
 
             let has_errors = result.diagnostics.iter().any(crate::core::semantic_analyzer::diagnostics::SemanticDiagnostic::is_error);
 
@@ -600,11 +600,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should not have errors for valid mixed types
         let error_diagnostics: Vec<_> =
@@ -622,11 +622,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Empty schema should not produce errors
         assert!(result.diagnostics.iter().all(|d| !d.is_error()));
@@ -647,11 +647,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Model without fields should not cause type resolution errors
         assert!(result.diagnostics.iter().all(|d| !d.is_error()));
@@ -711,11 +711,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Multiple models with valid types should not have errors
         let error_diagnostics: Vec<_> =
@@ -774,11 +774,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = TypeResolutionAnalyzer::new();
+        let analyzer = TypeResolutionAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should have exactly one error for the invalid type
         let error_diagnostics: Vec<_> =
@@ -810,9 +810,9 @@ mod tests {
         };
 
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect circular dependency
         assert!(result.diagnostics.iter().any(|d| matches!(

@@ -1,4 +1,6 @@
 //! Attribute validation analyzer for semantic analysis.
+
+#![allow(clippy::ptr_arg)] // Need Vec for push operations
 //!
 //! This analyzer is the fourth phase of semantic analysis and validates all attributes
 //! in the schema. It checks for unknown attributes, validates attribute arguments,
@@ -281,14 +283,14 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Analyze all attributes in the schema.
-    fn analyze_schema_attributes(
+    pub fn analyze_schema_attributes(
         &self,
-        schema: &Schema,
+        _schema: &Schema,
         _context: &AnalysisContext,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
+        _diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         // Create local usage tracking for this analysis run
-        let attribute_usage: HashMap<String, Vec<String>> = HashMap::new();
+        let _attribute_usage: HashMap<String, Vec<String>> = HashMap::new();
 
         // Analyze all declarations
         // TODO: Re-implement these with thread-safe patterns
@@ -322,7 +324,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Analyze attributes for a model.
-    fn analyze_model_attributes(
+    pub fn analyze_model_attributes(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -384,7 +386,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Analyze attributes for an enum.
-    fn analyze_enum_attributes(
+    pub fn analyze_enum_attributes(
         &mut self,
         enum_decl: &crate::core::parser::ast::EnumDecl,
         diagnostics: &mut Vec<SemanticDiagnostic>,
@@ -447,7 +449,7 @@ impl AttributeValidationAnalyzer {
 
     /// Analyze attributes for a datasource.
     #[expect(clippy::ptr_arg)]
-    fn analyze_datasource_attributes(
+    pub fn analyze_datasource_attributes(
         _datasource: &crate::core::parser::ast::DatasourceDecl,
         _diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -457,7 +459,7 @@ impl AttributeValidationAnalyzer {
 
     /// Analyze attributes for a generator.
     #[expect(clippy::ptr_arg)]
-    fn analyze_generator_attributes(
+    pub fn analyze_generator_attributes(
         _generator: &crate::core::parser::ast::GeneratorDecl,
         _diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -466,7 +468,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Analyze a single attribute.
-    fn analyze_single_attribute(
+    pub fn analyze_single_attribute(
         &mut self,
         attr_name: &str,
         attr_args: Option<&crate::core::parser::ast::ArgList>,
@@ -528,7 +530,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Validate arguments for an attribute.
-    fn validate_attribute_arguments(
+    pub fn validate_attribute_arguments(
         attr_name: &str,
         attr_args: Option<&crate::core::parser::ast::ArgList>,
         attr_span: &SymbolSpan,
@@ -590,7 +592,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Track attribute usage for conflict detection.
-    fn track_attribute_usage(
+    pub fn track_attribute_usage(
         attribute_usage: &mut HashMap<String, Vec<String>>,
         attr_name: &str,
         location: &str,
@@ -602,7 +604,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Validate for conflicting attributes.
-    fn validate_attribute_conflicts(
+    pub fn validate_attribute_conflicts(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -631,7 +633,7 @@ impl AttributeValidationAnalyzer {
     }
 
     /// Check for mutually exclusive attributes.
-    fn check_mutually_exclusive_attributes(
+    pub fn check_mutually_exclusive_attributes(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
@@ -689,8 +691,8 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
 
     fn analyze(
         &self,
-        schema: &Schema,
-        context: &AnalysisContext,
+        _schema: &Schema,
+        _context: &AnalysisContext,
     ) -> PhaseResult {
         let diagnostics = Vec::new();
 
@@ -714,7 +716,6 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::core::parser::ast::*;
@@ -740,7 +741,7 @@ mod tests {
         let analyzer = AttributeValidationAnalyzer::new();
         assert_eq!(analyzer.phase_name(), "attribute-validation");
         assert_eq!(analyzer.dependencies(), &["symbol-collection"]);
-        assert!(!analyzer.supports_parallel_execution());
+        assert!(analyzer.supports_parallel_execution());
         assert!(!analyzer.attribute_registry().is_empty());
     }
 
@@ -779,11 +780,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Empty schema should not have attribute errors
         assert!(result.diagnostics.is_empty());
@@ -818,11 +819,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Model without attributes should not have errors
         assert!(result.diagnostics.is_empty());
@@ -867,11 +868,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect unknown attribute
         assert_eq!(result.diagnostics.len(), 1);
@@ -908,11 +909,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect invalid context usage
         assert_eq!(result.diagnostics.len(), 1);
@@ -963,11 +964,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect deprecated attribute
         assert_eq!(result.diagnostics.len(), 1);
@@ -1035,11 +1036,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let _result = analyzer.analyze(&schema, &mut context);
+        let _result = analyzer.analyze(&schema, &context);
 
         // Should process enum attributes without crashing
         // The analyzer should always return a valid result
@@ -1085,11 +1086,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Datasource and generator declarations should pass without attribute errors
         assert!(result.diagnostics.is_empty());
@@ -1145,15 +1146,90 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let _result = analyzer.analyze(&schema, &mut context);
+        let _result = analyzer.analyze(&schema, &context);
 
         // May or may not have validation errors depending on implementation
         // At minimum, should not crash - just check that we get some result
         // (The analyzer should always produce a result, even if empty)
+    }
+
+    fn get_complex_members() -> Vec<ModelMember> {
+        vec![
+            ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("id"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![
+                    FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("id")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    },
+                    FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("default")],
+                            span: create_test_span(),
+                        },
+                        args: Some(ArgList {
+                            items: vec![Arg::Positional(PositionalArg {
+                                value: Expr::FuncCall(FuncCall {
+                                    callee: QualifiedIdent {
+                                        parts: vec![create_test_ident("cuid")],
+                                        span: create_test_span(),
+                                    },
+                                    args: None,
+                                    span: create_test_span(),
+                                }),
+                                span: create_test_span(),
+                            })],
+                            span: create_test_span(),
+                        }),
+                        span: create_test_span(),
+                    },
+                ],
+                span: create_test_span(),
+            }),
+            ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("email"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("String")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("unique")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            }),
+        ]
     }
 
     #[test]
@@ -1161,80 +1237,7 @@ mod tests {
         let model = ModelDecl {
             docs: None,
             name: create_test_ident("User"),
-            members: vec![
-                ModelMember::Field(FieldDecl {
-                    docs: None,
-                    name: create_test_ident("id"),
-                    r#type: TypeRef::Named(NamedType {
-                        name: QualifiedIdent {
-                            parts: vec![create_test_ident("String")],
-                            span: create_test_span(),
-                        },
-                        span: create_test_span(),
-                    }),
-                    optional: false,
-                    modifiers: Vec::new(),
-                    attrs: vec![
-                        FieldAttribute {
-                            docs: None,
-                            name: QualifiedIdent {
-                                parts: vec![create_test_ident("id")],
-                                span: create_test_span(),
-                            },
-                            args: None,
-                            span: create_test_span(),
-                        },
-                        FieldAttribute {
-                            docs: None,
-                            name: QualifiedIdent {
-                                parts: vec![create_test_ident("default")],
-                                span: create_test_span(),
-                            },
-                            args: Some(ArgList {
-                                items: vec![Arg::Positional(PositionalArg {
-                                    value: Expr::FuncCall(FuncCall {
-                                        callee: QualifiedIdent {
-                                            parts: vec![create_test_ident(
-                                                "cuid",
-                                            )],
-                                            span: create_test_span(),
-                                        },
-                                        args: None,
-                                        span: create_test_span(),
-                                    }),
-                                    span: create_test_span(),
-                                })],
-                                span: create_test_span(),
-                            }),
-                            span: create_test_span(),
-                        },
-                    ],
-                    span: create_test_span(),
-                }),
-                ModelMember::Field(FieldDecl {
-                    docs: None,
-                    name: create_test_ident("email"),
-                    r#type: TypeRef::Named(NamedType {
-                        name: QualifiedIdent {
-                            parts: vec![create_test_ident("String")],
-                            span: create_test_span(),
-                        },
-                        span: create_test_span(),
-                    }),
-                    optional: false,
-                    modifiers: Vec::new(),
-                    attrs: vec![FieldAttribute {
-                        docs: None,
-                        name: QualifiedIdent {
-                            parts: vec![create_test_ident("unique")],
-                            span: create_test_span(),
-                        },
-                        args: None,
-                        span: create_test_span(),
-                    }],
-                    span: create_test_span(),
-                }),
-            ],
+            members: get_complex_members(),
             attrs: vec![BlockAttribute {
                 docs: None,
                 name: QualifiedIdent {
@@ -1262,11 +1265,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let _result = analyzer.analyze(&schema, &mut context);
+        let _result = analyzer.analyze(&schema, &context);
 
         // Complex model with various attributes should process without crashing
         // The analyzer should always return a valid result
@@ -1277,7 +1280,8 @@ mod tests {
         let analyzer = AttributeValidationAnalyzer::new();
         assert_eq!(analyzer.phase_name(), "attribute-validation");
         assert_eq!(analyzer.dependencies(), &["symbol-collection"]);
-        assert!(!analyzer.supports_parallel_execution()); // Does not support parallel execution
+
+        assert!(analyzer.supports_parallel_execution()); // Now supports parallel execution
     }
 
     #[test]
@@ -1337,11 +1341,11 @@ mod tests {
             span: create_test_span(),
         };
 
-        let mut analyzer = AttributeValidationAnalyzer::new();
+        let analyzer = AttributeValidationAnalyzer::new();
         let options = AnalyzerOptions::default();
-        let mut context = AnalysisContext::new_test(&options);
+        let context = AnalysisContext::new_test(&options);
 
-        let result = analyzer.analyze(&schema, &mut context);
+        let result = analyzer.analyze(&schema, &context);
 
         // Should detect unknown attribute or context violation
         assert!(!result.diagnostics.is_empty());

@@ -1195,13 +1195,13 @@ mod tests {
     }
 
     #[test]
-    fn test_error_trait_implementation() {
+    fn test_implementation() {
         let error = TypeResolutionError::UnknownType {
             name: "Test".to_string(),
         };
 
         // Test that it implements std::error::Error
-        let _error_trait: &dyn std::error::Error = &error;
+        let _: &dyn std::error::Error = &error;
     }
 
     #[test]
@@ -1581,7 +1581,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_trait_implementations() {
+    fn test_implementations() {
         // Test all error variants implement Error trait correctly
         let errors = vec![
             TypeResolutionError::UnknownType {
@@ -1615,7 +1615,7 @@ mod tests {
             assert!(!display_str.is_empty());
 
             // Test Error trait
-            let _error_trait: &dyn std::error::Error = &error;
+            let _: &dyn std::error::Error = &error;
 
             // Test Debug trait
             let debug_str = format!("{error:?}");
