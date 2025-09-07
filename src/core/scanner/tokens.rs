@@ -263,7 +263,7 @@ impl Token {
     #[must_use]
     pub fn new(r#type: TokenType, start: (u32, u32), end: (u32, u32)) -> Self {
         assert!(
-            start.0 <= end.0 && start.1 <= end.1,
+            start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1),
             "span should be monotonically increasing"
         );
         Self {
