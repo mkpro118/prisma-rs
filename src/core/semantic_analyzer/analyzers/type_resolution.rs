@@ -221,14 +221,73 @@ impl PhaseAnalyzer for TypeResolutionAnalyzer {
 
     fn analyze(
         &self,
-        _schema: &Schema,
+        schema: &Schema,
         _context: &AnalysisContext,
     ) -> PhaseResult {
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
-        // TODO: Re-implement with thread-safe approach
-        // For now, basic validation without state tracking
-        // self.resolve_schema_types(schema, context, &mut diagnostics);
+        // Build a minimal symbol table from the schema so named types can resolve
+        let mut symbol_table =
+            crate::core::semantic_analyzer::symbol_table::SymbolTable::new();
+        for decl in &schema.declarations {
+            match decl {
+                Declaration::Model(m) => {
+                    let _ = symbol_table.add_model(m);
+                }
+                Declaration::Enum(e) => {
+                    let _ = symbol_table.add_enum(e);
+                }
+                Declaration::Datasource(d) => {
+                    let _ = symbol_table.add_datasource(d);
+                }
+                Declaration::Generator(g) => {
+                    let _ = symbol_table.add_generator(g);
+                }
+                Declaration::Type(_) => {
+                    // Type aliases are handled indirectly during resolution
+                }
+            }
+        }
+
+        // Use a local resolver cloned from self to allow read-only analyze API
+        let mut resolver = self.type_resolver.clone();
+
+        // Resolve all field types and collect diagnostics
+        for declaration in &schema.declarations {
+            if let Declaration::Model(model) = declaration {
+                for member in &model.members {
+                    if let ModelMember::Field(field) = member {
+                        match resolver
+                            .resolve_type(&field.r#type, &symbol_table)
+                        {
+                            Ok(resolved_ty) => {
+                                Self::validate_resolved_type(
+                                    &resolved_ty,
+                                    &field.r#type,
+                                    &mut diagnostics,
+                                );
+                            }
+                            Err(err) => {
+                                Self::add_type_resolution_error(
+                                    err,
+                                    field.r#type.span(),
+                                    &mut diagnostics,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for circular dependencies accumulated in the resolver
+        if let Err(err) = resolver.check_circular_dependencies() {
+            Self::add_type_resolution_error(
+                err,
+                &schema.span,
+                &mut diagnostics,
+            );
+        }
 
         PhaseResult::new(diagnostics)
     }

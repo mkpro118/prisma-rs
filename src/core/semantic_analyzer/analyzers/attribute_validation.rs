@@ -676,6 +676,188 @@ impl AttributeValidationAnalyzer {
     pub fn attribute_registry(&self) -> &HashMap<String, AttributeDefinition> {
         &self.attribute_registry
     }
+
+    /// Analyze attributes for a model (immutable version for thread safety).
+    fn analyze_model_attributes_immutable(
+        &self,
+        model: &crate::core::parser::ast::ModelDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Analyze model-level attributes
+        for attr in &model.attrs {
+            self.analyze_single_attribute_immutable(
+                &attr
+                    .name
+                    .parts
+                    .first()
+                    .map_or(String::new(), |p| p.text.clone()),
+                attr.args.as_ref(),
+                &attr.span,
+                AttributeContext::Model,
+                &format!("model {}", model.name.text),
+                diagnostics,
+            );
+        }
+
+        // Analyze member attributes
+        for member in &model.members {
+            match member {
+                ModelMember::Field(field) => {
+                    for attr in &field.attrs {
+                        self.analyze_single_attribute_immutable(
+                            &attr
+                                .name
+                                .parts
+                                .first()
+                                .map_or(String::new(), |p| p.text.clone()),
+                            attr.args.as_ref(),
+                            &attr.span,
+                            AttributeContext::Field,
+                            &format!(
+                                "field {}.{}",
+                                model.name.text, field.name.text
+                            ),
+                            diagnostics,
+                        );
+                    }
+                }
+                ModelMember::BlockAttribute(attr) => {
+                    self.analyze_single_attribute_immutable(
+                        &attr
+                            .name
+                            .parts
+                            .first()
+                            .map_or(String::new(), |p| p.text.clone()),
+                        attr.args.as_ref(),
+                        &attr.span,
+                        AttributeContext::Model,
+                        &format!("model {}", model.name.text),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Analyze attributes for an enum (immutable version for thread safety).
+    fn analyze_enum_attributes_immutable(
+        &self,
+        enum_decl: &crate::core::parser::ast::EnumDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Analyze enum-level attributes
+        for attr in &enum_decl.attrs {
+            self.analyze_single_attribute_immutable(
+                &attr
+                    .name
+                    .parts
+                    .first()
+                    .map_or(String::new(), |p| p.text.clone()),
+                attr.args.as_ref(),
+                &attr.span,
+                AttributeContext::Enum,
+                &format!("enum {}", enum_decl.name.text),
+                diagnostics,
+            );
+        }
+
+        // Analyze enum members
+        for member in &enum_decl.members {
+            match member {
+                EnumMember::Value(value) => {
+                    for attr in &value.attrs {
+                        self.analyze_single_attribute_immutable(
+                            &attr
+                                .name
+                                .parts
+                                .first()
+                                .map_or(String::new(), |p| p.text.clone()),
+                            attr.args.as_ref(),
+                            &attr.span,
+                            AttributeContext::EnumValue,
+                            &format!(
+                                "enum value {}.{}",
+                                enum_decl.name.text, value.name.text
+                            ),
+                            diagnostics,
+                        );
+                    }
+                }
+                EnumMember::BlockAttribute(attr) => {
+                    self.analyze_single_attribute_immutable(
+                        &attr
+                            .name
+                            .parts
+                            .first()
+                            .map_or(String::new(), |p| p.text.clone()),
+                        attr.args.as_ref(),
+                        &attr.span,
+                        AttributeContext::Enum,
+                        &format!("enum {}", enum_decl.name.text),
+                        diagnostics,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Analyze a single attribute (immutable version for thread safety).
+    fn analyze_single_attribute_immutable(
+        &self,
+        attr_name: &str,
+        attr_args: Option<&crate::core::parser::ast::ArgList>,
+        attr_span: &SymbolSpan,
+        context: AttributeContext,
+        location: &str,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Check if attribute exists
+        let Some(definition) = self.attribute_registry.get(attr_name) else {
+            diagnostics.push(SemanticDiagnostic::error(
+                attr_span.clone(),
+                format!("Unknown attribute '@{attr_name}' on {location}"),
+                DiagnosticCode::UnknownAttribute,
+            ).with_suggestion("Check the attribute name spelling and Prisma documentation".to_string()));
+            return;
+        };
+
+        // Check if attribute is used in valid context
+        if !definition.valid_contexts.contains(&context) {
+            let valid_contexts: Vec<String> = definition
+                .valid_contexts
+                .iter()
+                .map(|c| format!("{c:?}").to_lowercase())
+                .collect();
+
+            diagnostics.push(SemanticDiagnostic::error(
+                attr_span.clone(),
+                format!(
+                    "Attribute '@{attr_name}' cannot be used on {location}. Valid contexts: {}",
+                    valid_contexts.join(", ")
+                ),
+                DiagnosticCode::AttributeNotApplicable,
+            ));
+            return;
+        }
+
+        // Check for deprecated attributes
+        if definition.deprecated {
+            diagnostics.push(SemanticDiagnostic::deprecated_feature(
+                attr_span.clone(),
+                attr_name,
+                definition.replacement.as_deref(),
+            ));
+        }
+
+        // Validate arguments
+        Self::validate_attribute_arguments(
+            attr_name,
+            attr_args,
+            attr_span,
+            definition,
+            diagnostics,
+        );
+    }
 }
 
 impl Default for AttributeValidationAnalyzer {
@@ -691,14 +873,33 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
 
     fn analyze(
         &self,
-        _schema: &Schema,
+        schema: &Schema,
         _context: &AnalysisContext,
     ) -> PhaseResult {
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
-        // TODO: Re-implement attribute tracking with thread-safe approach
-        // For now, basic validation without conflict detection
-        // self.analyze_schema_attributes(schema, context, &mut diagnostics);
+        // Analyze all declarations
+        for declaration in &schema.declarations {
+            match declaration {
+                crate::core::parser::ast::Declaration::Model(model) => {
+                    self.analyze_model_attributes_immutable(
+                        model,
+                        &mut diagnostics,
+                    );
+                }
+                crate::core::parser::ast::Declaration::Enum(enum_decl) => {
+                    self.analyze_enum_attributes_immutable(
+                        enum_decl,
+                        &mut diagnostics,
+                    );
+                }
+                crate::core::parser::ast::Declaration::Datasource(_)
+                | crate::core::parser::ast::Declaration::Generator(_)
+                | crate::core::parser::ast::Declaration::Type(_) => {
+                    // Not relevant for attribute validation in current Prisma
+                }
+            }
+        }
 
         PhaseResult::new(diagnostics)
     }

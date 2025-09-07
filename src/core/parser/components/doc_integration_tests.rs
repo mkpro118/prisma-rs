@@ -1,7 +1,5 @@
 //! Integration tests for doc comment association across all parsers.
 
-#![expect(clippy::unwrap_used)]
-
 use crate::core::parser::components::attributes::{
     BlockAttributeParser, FieldAttributeParser,
 };

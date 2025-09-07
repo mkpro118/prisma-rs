@@ -114,8 +114,6 @@ pub fn parse_leading_docs(stream: &mut dyn TokenStream) -> Option<Docs> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use super::*;
     use crate::core::parser::stream::VectorTokenStream;
 

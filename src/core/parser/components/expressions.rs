@@ -1023,8 +1023,6 @@ impl Parser<Expr> for ExpressionParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use crate::core::parser::components::expressions::ExpressionParser;
     use crate::core::parser::components::helpers::{
         extract_doc_text, parse_leading_docs,

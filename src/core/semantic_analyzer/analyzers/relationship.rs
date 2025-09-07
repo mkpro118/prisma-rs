@@ -14,6 +14,7 @@ use crate::core::semantic_analyzer::{
     traits::PhaseAnalyzer,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 
 // Relationship and RelationshipType are now imported from context
 
@@ -29,10 +30,10 @@ use std::collections::{HashMap, HashSet};
 /// The relationship analyzer uses the shared relationship graph from `AnalysisContext`.
 pub struct RelationshipAnalyzer {
     /// Graph of all relationships found in the schema (temporary until refactored)
-    relationship_graph: HashMap<String, Vec<Relationship>>,
+    relationship_graph: RwLock<HashMap<String, Vec<Relationship>>>,
 
     /// Track processed relationships to avoid duplicates
-    processed_relationships: HashSet<String>,
+    processed_relationships: RwLock<HashSet<String>>,
 }
 
 impl RelationshipAnalyzer {
@@ -40,8 +41,8 @@ impl RelationshipAnalyzer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            relationship_graph: HashMap::new(),
-            processed_relationships: HashSet::new(),
+            relationship_graph: RwLock::new(HashMap::new()),
+            processed_relationships: RwLock::new(HashSet::new()),
         }
     }
 
@@ -98,6 +99,9 @@ impl RelationshipAnalyzer {
     }
 
     /// Analyze a single `@relation` attribute.
+    ///
+    /// ## Panics
+    /// Panics if internal synchronization primitives are poisoned.
     pub fn analyze_relation_attribute(
         &mut self,
         model: &crate::core::parser::ast::ModelDecl,
@@ -127,7 +131,10 @@ impl RelationshipAnalyzer {
             format!("{}_{}", model.name.text, field.name.text);
 
         // Skip if already processed (avoid duplicates)
-        if self.processed_relationships.contains(&relationship_id) {
+        let Ok(processed) = self.processed_relationships.read() else {
+            return;
+        };
+        if processed.contains(&relationship_id) {
             return;
         }
 
@@ -147,13 +154,16 @@ impl RelationshipAnalyzer {
         };
 
         // Track as processed
-        self.processed_relationships.insert(relationship_id);
+        if let Ok(mut set) = self.processed_relationships.write() {
+            set.insert(relationship_id);
+        }
 
         // Add to graph
-        self.relationship_graph
-            .entry(model.name.text.clone())
-            .or_default()
-            .push(relationship);
+        if let Ok(mut map) = self.relationship_graph.write() {
+            map.entry(model.name.text.clone())
+                .or_default()
+                .push(relationship);
+        }
     }
 
     /// Extract the target model name from a field type.
@@ -329,12 +339,18 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that relationships have proper back-references.
+    ///
+    /// ## Panics
+    /// Panics if internal synchronization primitives are poisoned.
     pub fn validate_back_references(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         // For each relationship, check if the target model has a back-reference
-        for (from_model, relationships) in &self.relationship_graph {
+        let Ok(map) = self.relationship_graph.read() else {
+            return;
+        };
+        for (from_model, relationships) in map.iter() {
             for relationship in relationships {
                 // Skip self-referential relations for now
                 if relationship.from_model == relationship.to_model {
@@ -343,7 +359,7 @@ impl RelationshipAnalyzer {
 
                 // Check if target model has a relationship back to source
                 if let Some(target_relationships) =
-                    self.relationship_graph.get(&relationship.to_model)
+                    map.get(&relationship.to_model)
                 {
                     let has_back_reference =
                         target_relationships.iter().any(|target_rel| {
@@ -383,13 +399,19 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that there are no conflicting relationship definitions.
+    ///
+    /// ## Panics
+    /// Panics if internal synchronization primitives are poisoned.
     pub fn validate_relationship_conflicts(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         // Check for multiple relationships between the same pair of models
         // with potentially conflicting configurations
-        for relationships in self.relationship_graph.values() {
+        let Ok(map) = self.relationship_graph.read() else {
+            return;
+        };
+        for relationships in map.values() {
             // Group relationships by target model
             let mut target_groups: HashMap<&String, Vec<&Relationship>> =
                 HashMap::new();
@@ -445,11 +467,17 @@ impl RelationshipAnalyzer {
     }
 
     /// Validate that foreign keys are consistent.
+    ///
+    /// ## Panics
+    /// Panics if internal synchronization primitives are poisoned.
     pub fn validate_foreign_key_consistency(
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        for relationships in self.relationship_graph.values() {
+        let Ok(map) = self.relationship_graph.read() else {
+            return;
+        };
+        for relationships in map.values() {
             for relationship in relationships {
                 // Validate that foreign keys and references have matching lengths
                 if !relationship.foreign_keys.is_empty()
@@ -617,10 +645,16 @@ impl RelationshipAnalyzer {
         }
     }
 
-    /// Get the relationship graph.
+    /// Get a snapshot of the relationship graph.
+    ///
+    /// ## Panics
+    /// Panics if internal synchronization primitives are poisoned.
     #[must_use]
-    pub fn relationship_graph(&self) -> &HashMap<String, Vec<Relationship>> {
-        &self.relationship_graph
+    pub fn relationship_graph(&self) -> HashMap<String, Vec<Relationship>> {
+        self.relationship_graph
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -637,14 +671,25 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
 
     fn analyze(
         &self,
-        _schema: &Schema,
-        _context: &AnalysisContext,
+        schema: &Schema,
+        context: &AnalysisContext,
     ) -> PhaseResult {
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
-        // TODO: Re-implement with thread-safe approach
-        // For now, basic validation without state tracking
-        // self.analyze_schema_relationships(schema, context, &mut diagnostics);
+        // Clear previous analysis state
+        if let Ok(mut g) = self.relationship_graph.write() {
+            g.clear();
+        }
+        if let Ok(mut g) = self.processed_relationships.write() {
+            g.clear();
+        }
+
+        // Analyze relationships
+        self.analyze_schema_relationships_refcell(
+            schema,
+            context,
+            &mut diagnostics,
+        );
 
         PhaseResult::new(diagnostics)
     }
@@ -658,6 +703,96 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
         // Relationship analysis modifies shared state, so no parallelism
         false
     }
+}
+
+impl RelationshipAnalyzer {
+    /// Relationship analysis using interior mutability (`RwLock`).
+    fn analyze_schema_relationships_refcell(
+        &self,
+        schema: &Schema,
+        _context: &AnalysisContext,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // First pass: collect all @relation attributes
+        for declaration in &schema.declarations {
+            if let Declaration::Model(model) = declaration {
+                self.analyze_model_relationships_refcell(model, diagnostics);
+            }
+        }
+    }
+
+    /// Model relationship analysis helper.
+    fn analyze_model_relationships_refcell(
+        &self,
+        model: &crate::core::parser::ast::ModelDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        for member in &model.members {
+            if let ModelMember::Field(field) = member {
+                self.analyze_field_relationships_refcell(
+                    model,
+                    field,
+                    diagnostics,
+                );
+            }
+        }
+    }
+
+    /// Field relationship analysis helper.
+    fn analyze_field_relationships_refcell(
+        &self,
+        model: &crate::core::parser::ast::ModelDecl,
+        field: &crate::core::parser::ast::FieldDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        for attr in &field.attrs {
+            if attr.name.parts.len() == 1
+                && attr.name.parts[0].text == "relation"
+            {
+                if let Some(target) =
+                    Self::extract_target_model_from_field_type(&field.r#type)
+                {
+                    let relationship = Relationship {
+                        id: format!("{}_{}", model.name.text, field.name.text),
+                        from_model: model.name.text.clone(),
+                        from_field: field.name.text.clone(),
+                        to_model: target,
+                        to_field: None,
+                        relationship_type: Self::determine_relationship_type(
+                            field,
+                        ),
+                        foreign_keys: Vec::new(),
+                        references: Vec::new(),
+                    };
+
+                    if let Ok(mut g) = self.relationship_graph.write() {
+                        g.entry(model.name.text.clone())
+                            .or_default()
+                            .push(relationship);
+                    }
+                } else {
+                    let diagnostic = SemanticDiagnostic::error(
+                        field.span.clone(),
+                        "Invalid relationship field type".to_string(),
+                        DiagnosticCode::InvalidRelation,
+                    );
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
+    // The immutable (copy-out) variant was removed for simplicity since the
+    // analyzer already uses interior mutability with RwLock.
+}
+
+/// Information about a relationship between models.
+#[derive(Debug, Clone)]
+pub struct RelationshipInfo {
+    pub source_model: String,
+    pub target_model: String,
+    pub field_name: String,
+    pub span: SymbolSpan,
 }
 
 /// Arguments parsed from a @relation attribute.
@@ -1085,7 +1220,8 @@ mod tests {
 
         assert!(result.diagnostics.is_empty());
 
-        let user_relationships = analyzer.relationship_graph().get("User");
+        let graph = analyzer.relationship_graph();
+        let user_relationships = graph.get("User");
         assert!(user_relationships.is_some());
         let relationships = user_relationships.unwrap();
         assert_eq!(relationships.len(), 1);

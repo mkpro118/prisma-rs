@@ -241,7 +241,6 @@ impl<T> ParseResult<T> {
 
 #[cfg(test)]
 mod config_tests {
-    #![expect(clippy::unwrap_used)]
     use super::*;
     use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
 

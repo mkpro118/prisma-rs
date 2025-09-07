@@ -5,13 +5,14 @@
 //! It performs comprehensive validation that goes beyond syntax and basic semantics.
 
 use crate::core::parser::ast::{Declaration, ModelMember, Schema};
-use crate::core::scanner::tokens::SymbolSpan;
+use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
 use crate::core::semantic_analyzer::{
     context::{AnalysisContext, PhaseResult},
     diagnostics::{DiagnosticCode, SemanticDiagnostic},
     traits::PhaseAnalyzer,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 
 /// Represents a business rule violation category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,13 +94,13 @@ pub struct BusinessRuleAnalyzer {
     config: BusinessRuleConfig,
 
     /// Model information collected during analysis (TODO: use shared symbol table)
-    model_info: HashMap<String, ModelInfo>,
+    model_info: RwLock<HashMap<String, ModelInfo>>,
 
     /// Relationship graph for circular dependency detection (TODO: use shared graph)
-    relationship_graph: HashMap<String, HashSet<String>>,
+    relationship_graph: RwLock<HashMap<String, HashSet<String>>>,
 
     /// Track datasource providers for provider-specific rules
-    datasource_providers: HashSet<String>,
+    datasource_providers: RwLock<HashSet<String>>,
 }
 
 /// Information about a model collected during analysis.
@@ -117,11 +118,39 @@ pub struct ModelInfo {
     /// Whether the model has any indexes
     pub has_indexes: bool,
 
+    /// Whether the model has audit fields like createdAt/updatedAt
+    pub has_audit_fields: bool,
+
     /// List of foreign key fields (for index suggestions)
     pub foreign_key_fields: Vec<String>,
 
     /// Model span for error reporting
     pub span: SymbolSpan,
+}
+
+impl ModelInfo {
+    /// Create a new `ModelInfo` with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            name: String::new(),
+            field_count: 0,
+            has_primary_key: false,
+            has_indexes: false,
+            has_audit_fields: false,
+            foreign_key_fields: Vec::new(),
+            span: SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 1 },
+            },
+        }
+    }
+}
+
+impl Default for ModelInfo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BusinessRuleAnalyzer {
@@ -136,24 +165,36 @@ impl BusinessRuleAnalyzer {
     pub fn with_config(config: BusinessRuleConfig) -> Self {
         Self {
             config,
-            model_info: HashMap::new(),
-            relationship_graph: HashMap::new(),
-            datasource_providers: HashSet::new(),
+            model_info: RwLock::new(HashMap::new()),
+            relationship_graph: RwLock::new(HashMap::new()),
+            datasource_providers: RwLock::new(HashSet::new()),
         }
     }
 
     /// Analyze all business rules using data from previous phases.
     /// TODO: Remove AST traversal and use data from shared context instead
     pub fn analyze_schema_business_rules(
-        &mut self,
+        &self,
         schema: &Schema,
         context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         // Clear previous analysis state
-        self.model_info.clear();
-        self.relationship_graph.clear();
-        self.datasource_providers.clear();
+        if let Ok(mut g) = self.model_info.write() {
+            g.clear();
+        } else {
+            return;
+        }
+        if let Ok(mut g) = self.relationship_graph.write() {
+            g.clear();
+        } else {
+            return;
+        }
+        if let Ok(mut g) = self.datasource_providers.write() {
+            g.clear();
+        } else {
+            return;
+        }
 
         // TODO: This should be removed - data should come from shared context
         // For now, keeping to avoid compilation errors
@@ -168,7 +209,7 @@ impl BusinessRuleAnalyzer {
     }
 
     /// TODO: Remove this method - data should come from shared context
-    pub fn collect_schema_information(&mut self, schema: &Schema) {
+    pub fn collect_schema_information(&self, schema: &Schema) {
         for declaration in &schema.declarations {
             match declaration {
                 Declaration::Model(model) => {
@@ -180,8 +221,9 @@ impl BusinessRuleAnalyzer {
                         if assignment.key.text == "provider"
                             && let Some(provider) =
                                 Self::extract_string_value(&assignment.value)
+                            && let Ok(mut g) = self.datasource_providers.write()
                         {
-                            self.datasource_providers.insert(provider);
+                            g.insert(provider);
                         }
                     }
                 }
@@ -196,7 +238,7 @@ impl BusinessRuleAnalyzer {
 
     /// Collect information about a single model.
     pub fn collect_model_information(
-        &mut self,
+        &self,
         model: &crate::core::parser::ast::ModelDecl,
     ) {
         let mut field_count = 0;
@@ -232,9 +274,9 @@ impl BusinessRuleAnalyzer {
                         // Extract target model for relationship graph
                         if let Some(target_model) =
                             Self::extract_target_model_from_field(&field.r#type)
+                            && let Ok(mut g) = self.relationship_graph.write()
                         {
-                            self.relationship_graph
-                                .entry(model.name.text.clone())
+                            g.entry(model.name.text.clone())
                                 .or_default()
                                 .insert(target_model);
                         }
@@ -256,11 +298,14 @@ impl BusinessRuleAnalyzer {
             field_count,
             has_primary_key,
             has_indexes,
+            has_audit_fields: false, // TODO: Implement audit field detection
             foreign_key_fields,
             span: model.span.clone(),
         };
 
-        self.model_info.insert(model.name.text.clone(), model_info);
+        if let Ok(mut g) = self.model_info.write() {
+            g.insert(model.name.text.clone(), model_info);
+        }
     }
 
     /// Extract target model from a field type for relationship analysis.
@@ -295,6 +340,8 @@ impl BusinessRuleAnalyzer {
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
         if !self
             .config
             .enabled_categories
@@ -303,7 +350,10 @@ impl BusinessRuleAnalyzer {
             return;
         }
 
-        for model_info in self.model_info.values() {
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_info in info_map.values() {
             // Rule: Every model should have a primary key
             if self.config.require_primary_keys && !model_info.has_primary_key {
                 diagnostics.push(SemanticDiagnostic::missing_primary_key(
@@ -364,6 +414,8 @@ impl BusinessRuleAnalyzer {
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
         if !self
             .config
             .enabled_categories
@@ -372,7 +424,10 @@ impl BusinessRuleAnalyzer {
             return;
         }
 
-        for model_info in self.model_info.values() {
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_info in info_map.values() {
             // Rule: Foreign key fields should have indexes for performance
             if self.config.warn_missing_indexes
                 && !model_info.has_indexes
@@ -400,7 +455,15 @@ impl BusinessRuleAnalyzer {
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        for model_name in self.relationship_graph.keys() {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
+        let Ok(rel_map) = self.relationship_graph.read() else {
+            return;
+        };
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_name in rel_map.keys() {
             let depth = self.calculate_max_relationship_depth(
                 model_name,
                 &mut HashSet::new(),
@@ -408,7 +471,7 @@ impl BusinessRuleAnalyzer {
             );
 
             if depth > self.config.max_relationship_depth
-                && let Some(model_info) = self.model_info.get(model_name)
+                && let Some(model_info) = info_map.get(model_name)
             {
                 diagnostics.push(SemanticDiagnostic::performance_warning(
                         model_info.span.clone(),
@@ -436,22 +499,24 @@ impl BusinessRuleAnalyzer {
 
         visited.insert(model_name.to_string());
 
-        let max_depth =
-            if let Some(targets) = self.relationship_graph.get(model_name) {
-                targets
-                    .iter()
-                    .map(|target| {
-                        self.calculate_max_relationship_depth(
-                            target,
-                            visited,
-                            current_depth + 1,
-                        )
-                    })
-                    .max()
-                    .unwrap_or(current_depth)
-            } else {
-                current_depth
-            };
+        let Ok(rel_map) = self.relationship_graph.read() else {
+            return current_depth;
+        };
+        let max_depth = if let Some(targets) = rel_map.get(model_name) {
+            targets
+                .iter()
+                .map(|target| {
+                    self.calculate_max_relationship_depth(
+                        target,
+                        visited,
+                        current_depth + 1,
+                    )
+                })
+                .max()
+                .unwrap_or(current_depth)
+        } else {
+            current_depth
+        };
 
         visited.remove(model_name);
         max_depth
@@ -463,6 +528,8 @@ impl BusinessRuleAnalyzer {
         _context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
         if !self
             .config
             .enabled_categories
@@ -472,7 +539,10 @@ impl BusinessRuleAnalyzer {
         }
 
         // Rule: Warn about potentially sensitive field names without appropriate handling
-        for model_info in self.model_info.values() {
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_info in info_map.values() {
             if model_info.name.to_lowercase().contains("user")
                 || model_info.name.to_lowercase().contains("account")
                 || model_info.name.to_lowercase().contains("auth")
@@ -518,9 +588,17 @@ impl BusinessRuleAnalyzer {
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        for model_name in self.relationship_graph.keys() {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
+        let Ok(rel_map) = self.relationship_graph.read() else {
+            return;
+        };
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_name in rel_map.keys() {
             if self.has_circular_relationship(model_name, &mut HashSet::new())
-                && let Some(model_info) = self.model_info.get(model_name)
+                && let Some(model_info) = info_map.get(model_name)
             {
                 diagnostics.push(SemanticDiagnostic::warning(
                         model_info.span.clone(),
@@ -543,14 +621,16 @@ impl BusinessRuleAnalyzer {
 
         visited.insert(model_name.to_string());
 
-        let has_cycle =
-            if let Some(targets) = self.relationship_graph.get(model_name) {
-                targets.iter().any(|target| {
-                    self.has_circular_relationship(target, visited)
-                })
-            } else {
-                false
-            };
+        let Ok(rel_map) = self.relationship_graph.read() else {
+            return false;
+        };
+        let has_cycle = if let Some(targets) = rel_map.get(model_name) {
+            targets
+                .iter()
+                .any(|target| self.has_circular_relationship(target, visited))
+        } else {
+            false
+        };
 
         visited.remove(model_name);
         has_cycle
@@ -561,7 +641,12 @@ impl BusinessRuleAnalyzer {
         &self,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        for model_info in self.model_info.values() {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_info in info_map.values() {
             // Suggest audit fields for important business models
             if model_info.name.to_lowercase().contains("order")
                 || model_info.name.to_lowercase().contains("transaction")
@@ -594,7 +679,10 @@ impl BusinessRuleAnalyzer {
             return;
         }
 
-        for provider in &self.datasource_providers {
+        let Ok(providers) = self.datasource_providers.read() else {
+            return;
+        };
+        for provider in providers.iter() {
             match provider.as_str() {
                 "sqlite" => self.validate_sqlite_rules(diagnostics),
                 "mysql" => Self::validate_mysql_rules(diagnostics),
@@ -608,7 +696,10 @@ impl BusinessRuleAnalyzer {
     /// Validate SQLite-specific rules.
     fn validate_sqlite_rules(&self, diagnostics: &mut Vec<SemanticDiagnostic>) {
         // SQLite has limitations on field counts and relationship complexity
-        for model_info in self.model_info.values() {
+        let Ok(info_map) = self.model_info.read() else {
+            return;
+        };
+        for model_info in info_map.values() {
             if model_info.field_count > 30 {
                 diagnostics.push(SemanticDiagnostic::warning(
                     model_info.span.clone(),
@@ -648,8 +739,13 @@ impl BusinessRuleAnalyzer {
 
     /// Get collected model information.
     #[must_use]
-    pub fn model_info(&self) -> &HashMap<String, ModelInfo> {
-        &self.model_info
+    pub fn model_info(&self) -> HashMap<String, ModelInfo> {
+        // ## Panics
+        // Panics if internal synchronization primitives are poisoned.
+        self.model_info
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -666,14 +762,13 @@ impl PhaseAnalyzer for BusinessRuleAnalyzer {
 
     fn analyze(
         &self,
-        _schema: &Schema,
-        _context: &AnalysisContext,
+        schema: &Schema,
+        context: &AnalysisContext,
     ) -> PhaseResult {
-        let diagnostics = Vec::new();
+        let mut diagnostics = Vec::new();
 
-        // TODO: Re-implement with thread-safe approach
-        // For now, basic validation without state tracking
-        // self.analyze_schema_business_rules(schema, context, &mut diagnostics);
+        // Perform full analysis with internal state (via interior mutability)
+        self.analyze_schema_business_rules(schema, context, &mut diagnostics);
 
         PhaseResult::new(diagnostics)
     }
@@ -691,6 +786,344 @@ impl PhaseAnalyzer for BusinessRuleAnalyzer {
     fn supports_parallel_execution(&self) -> bool {
         // Business rule analysis can run in parallel since we removed mutable state
         true
+    }
+}
+
+impl BusinessRuleAnalyzer {
+    /// Immutable version of business rules analysis for thread safety.
+    pub fn analyze_schema_business_rules_immutable(
+        &self,
+        schema: &Schema,
+        context: &AnalysisContext,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Collect schema information locally without modifying self
+        let mut local_model_info = HashMap::new();
+        let mut local_relationship_graph = HashMap::new();
+        let mut local_datasource_providers = HashSet::new();
+
+        // Collect information locally
+        for declaration in &schema.declarations {
+            match declaration {
+                Declaration::Model(model) => {
+                    Self::collect_model_information_immutable(
+                        model,
+                        &mut local_model_info,
+                        &mut local_relationship_graph,
+                    );
+                }
+                Declaration::Datasource(datasource) => {
+                    // Extract provider information
+                    for assignment in &datasource.assignments {
+                        if assignment.key.text == "provider"
+                            && let Some(provider) =
+                                Self::extract_string_value(&assignment.value)
+                        {
+                            local_datasource_providers.insert(provider);
+                        }
+                    }
+                }
+                Declaration::Enum(_)
+                | Declaration::Generator(_)
+                | Declaration::Type(_) => {
+                    // Not relevant for business rule analysis
+                }
+            }
+        }
+
+        // Validate business rules using collected data
+        self.validate_database_integrity_rules_immutable(
+            context,
+            &local_model_info,
+            diagnostics,
+        );
+        self.validate_performance_rules_immutable(
+            context,
+            &local_model_info,
+            diagnostics,
+        );
+        self.validate_security_rules_immutable(
+            context,
+            &local_model_info,
+            diagnostics,
+        );
+        self.validate_data_modeling_rules_immutable(
+            context,
+            &local_model_info,
+            diagnostics,
+        );
+        self.validate_provider_specific_rules_immutable(
+            context,
+            &local_model_info,
+            &local_datasource_providers,
+            diagnostics,
+        );
+    }
+
+    /// Immutable version of model information collection.
+    fn collect_model_information_immutable(
+        model: &crate::core::parser::ast::ModelDecl,
+        model_info: &mut HashMap<String, ModelInfo>,
+        _relationship_graph: &mut HashMap<String, HashSet<String>>,
+    ) {
+        let model_name = model.name.text.clone();
+        let mut info = ModelInfo::new();
+
+        // Collect field information
+        for member in &model.members {
+            if let crate::core::parser::ast::ModelMember::Field(field) = member
+            {
+                info.field_count += 1;
+
+                // Check for primary key
+                if field.attrs.iter().any(|attr| {
+                    attr.name.parts.len() == 1
+                        && attr.name.parts[0].text == "id"
+                }) {
+                    info.has_primary_key = true;
+                }
+
+                // Check for audit fields
+                let field_name = &field.name.text;
+                if field_name == "createdAt" || field_name == "updatedAt" {
+                    info.has_audit_fields = true;
+                }
+            }
+        }
+
+        model_info.insert(model_name, info);
+    }
+
+    /// Immutable version of database integrity validation.
+    fn validate_database_integrity_rules_immutable(
+        &self,
+        _context: &AnalysisContext,
+        model_info: &HashMap<String, ModelInfo>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if !self
+            .config
+            .enabled_categories
+            .contains(&BusinessRuleCategory::DatabaseIntegrity)
+        {
+            return;
+        }
+
+        for (model_name, info) in model_info {
+            // Rule: Every model should have a primary key
+            if self.config.require_primary_keys && !info.has_primary_key {
+                let diagnostic = SemanticDiagnostic::error(
+                    info.span.clone(),
+                    format!(
+                        "Model '{model_name}' does not have a primary key. Consider adding an 'id' field."
+                    ),
+                    DiagnosticCode::MissingPrimaryKey,
+                );
+                diagnostics.push(diagnostic);
+            }
+
+            // Rule: Models should not be empty
+            if let Some(min_fields) = self.config.min_model_fields
+                && info.field_count < min_fields
+            {
+                let diagnostic = SemanticDiagnostic::error(
+                    info.span.clone(),
+                    format!(
+                        "Model '{model_name}' has {} fields, which is less than the minimum of {min_fields}.",
+                        info.field_count
+                    ),
+                    DiagnosticCode::EmptyModel,
+                );
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    /// Immutable version of performance validation.
+    fn validate_performance_rules_immutable(
+        &self,
+        _context: &AnalysisContext,
+        model_info: &HashMap<String, ModelInfo>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if !self
+            .config
+            .enabled_categories
+            .contains(&BusinessRuleCategory::Performance)
+        {
+            return;
+        }
+
+        for (model_name, info) in model_info {
+            // Rule: Models shouldn't have too many fields
+            if let Some(max_fields) = self.config.max_model_fields
+                && info.field_count > max_fields
+            {
+                let diagnostic = SemanticDiagnostic::warning(
+                    info.span.clone(),
+                    format!(
+                        "Model '{model_name}' has {} fields, which exceeds the maximum of {max_fields}. Consider breaking it into smaller models.",
+                        info.field_count
+                    ),
+                    DiagnosticCode::PerformanceWarning,
+                );
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    /// Immutable version of security validation.
+    fn validate_security_rules_immutable(
+        &self,
+        _context: &AnalysisContext,
+        model_info: &HashMap<String, ModelInfo>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if !self
+            .config
+            .enabled_categories
+            .contains(&BusinessRuleCategory::Security)
+        {
+            return;
+        }
+
+        for (model_name, info) in model_info {
+            // Rule: Security-sensitive models should have audit fields
+            if BusinessRuleAnalyzer::is_security_sensitive_model(model_name)
+                && !info.has_audit_fields
+            {
+                let diagnostic = SemanticDiagnostic::warning(
+                    info.span.clone(),
+                    format!(
+                        "Security-sensitive model '{model_name}' should have audit fields like 'createdAt' and 'updatedAt'."
+                    ),
+                    DiagnosticCode::MissingField,
+                );
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    /// Immutable version of data modeling validation.
+    fn validate_data_modeling_rules_immutable(
+        &self,
+        _context: &AnalysisContext,
+        model_info: &HashMap<String, ModelInfo>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if !self
+            .config
+            .enabled_categories
+            .contains(&BusinessRuleCategory::DataModeling)
+        {
+            return;
+        }
+
+        for (model_name, info) in model_info {
+            // Additional data modeling rules can be added here
+            if info.field_count == 0 {
+                let diagnostic = SemanticDiagnostic::error(
+                    info.span.clone(),
+                    format!("Model '{model_name}' has no fields defined."),
+                    DiagnosticCode::EmptyModel,
+                );
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    /// Immutable version of provider-specific validation.
+    fn validate_provider_specific_rules_immutable(
+        &self,
+        _context: &AnalysisContext,
+        _model_info: &HashMap<String, ModelInfo>,
+        datasource_providers: &HashSet<String>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if !self
+            .config
+            .enabled_categories
+            .contains(&BusinessRuleCategory::ProviderSpecific)
+        {
+            return;
+        }
+
+        for provider in datasource_providers {
+            // Provider-specific validation rules
+            let span = SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation { line: 1, column: 1 },
+            };
+            match provider.as_str() {
+                "mongodb" => {
+                    let diagnostic = SemanticDiagnostic::info(
+                        span,
+                        "MongoDB provider detected - consider NoSQL-specific modeling patterns.".to_string(),
+                        DiagnosticCode::PerformanceWarning,
+                    );
+                    diagnostics.push(diagnostic);
+                }
+                "mysql" => {
+                    let diagnostic = SemanticDiagnostic::info(
+                        span,
+                        "MySQL provider detected - consider MySQL-specific constraints and features.".to_string(),
+                        DiagnosticCode::PerformanceWarning,
+                    );
+                    diagnostics.push(diagnostic);
+                }
+                "postgresql" => {
+                    let diagnostic = SemanticDiagnostic::info(
+                        span,
+                        "PostgreSQL provider detected - consider PostgreSQL-specific features and constraints.".to_string(),
+                        DiagnosticCode::PerformanceWarning,
+                    );
+                    diagnostics.push(diagnostic);
+                }
+                _ => {
+                    // Unknown provider
+                    let diagnostic = SemanticDiagnostic::error(
+                        span,
+                        format!("Unknown database provider '{provider}'."),
+                        DiagnosticCode::DatabaseProviderMismatch,
+                    );
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
+    /// Check if a model name indicates it's security-sensitive.
+    fn is_security_sensitive_model(model_name: &str) -> bool {
+        let sensitive_names = [
+            "User",
+            "Account",
+            "Auth",
+            "Login",
+            "Password",
+            "Token",
+            "Session",
+            "Security",
+            "Admin",
+            "Permission",
+            "Role",
+            "Credential",
+            "Payment",
+            "Billing",
+            "Card",
+            "Bank",
+            "Finance",
+            "Money",
+            "Invoice",
+            "Order",
+            "Transaction",
+            "Audit",
+            "Log",
+            "History",
+        ];
+
+        sensitive_names.iter().any(|&name| {
+            model_name.to_lowercase().contains(&name.to_lowercase())
+        })
     }
 }
 
@@ -1349,17 +1782,23 @@ mod tests {
     #[test]
     fn test_relationship_depth_calculation_directly() {
         // Test the relationship depth calculation methods more directly
-        let mut analyzer = BusinessRuleAnalyzer::new();
+        let analyzer = BusinessRuleAnalyzer::new();
 
         // Manually set up relationship graph for testing: A -> B -> C -> D
         analyzer
             .relationship_graph
+            .write()
+            .unwrap()
             .insert("A".to_string(), ["B".to_string()].into_iter().collect());
         analyzer
             .relationship_graph
+            .write()
+            .unwrap()
             .insert("B".to_string(), ["C".to_string()].into_iter().collect());
         analyzer
             .relationship_graph
+            .write()
+            .unwrap()
             .insert("C".to_string(), ["D".to_string()].into_iter().collect());
 
         // Test depth calculation
@@ -2034,6 +2473,7 @@ mod tests {
             field_count: 5,
             has_primary_key: true,
             has_indexes: false,
+            has_audit_fields: true,
             foreign_key_fields: vec![
                 "userId".to_string(),
                 "categoryId".to_string(),
