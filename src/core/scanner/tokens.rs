@@ -204,6 +204,12 @@ pub struct SymbolLocation {
     pub column: u32,
 }
 
+impl From<&SymbolLocation> for (u32, u32) {
+    fn from(value: &SymbolLocation) -> Self {
+        (value.line, value.column)
+    }
+}
+
 /// Record a half-open range covered by a token.
 ///
 /// Combine a start and end location. Only ordering is guaranteed.
@@ -263,7 +269,7 @@ impl Token {
     #[must_use]
     pub fn new(r#type: TokenType, start: (u32, u32), end: (u32, u32)) -> Self {
         assert!(
-            start.0 <= end.0 && start.1 <= end.1,
+            start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1),
             "span should be monotonically increasing"
         );
         Self {
@@ -385,5 +391,110 @@ mod tests {
     fn token_new_panics_on_inverted_span() {
         // end before start should panic
         let _ = Token::new(TokenType::At, (2, 1), (1, 1));
+    }
+
+    #[test]
+    fn symbol_location_from_reference_conversion() {
+        // Test the new From<&SymbolLocation> for (u32, u32) implementation
+        let location = SymbolLocation {
+            line: 5,
+            column: 10,
+        };
+        let tuple: (u32, u32) = (&location).into();
+        assert_eq!(tuple, (5, 10));
+
+        // Test with zero values
+        let location_zero = SymbolLocation { line: 0, column: 0 };
+        let tuple_zero: (u32, u32) = (&location_zero).into();
+        assert_eq!(tuple_zero, (0, 0));
+
+        // Test with maximum values
+        let location_max = SymbolLocation {
+            line: u32::MAX,
+            column: u32::MAX,
+        };
+        let tuple_max: (u32, u32) = (&location_max).into();
+        assert_eq!(tuple_max, (u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn token_new_lexicographic_span_ordering() {
+        // Test the updated span monotonicity check with lexicographic ordering
+
+        // Same line: start.column <= end.column should work
+        let start = SymbolLocation { line: 1, column: 5 };
+        let end = SymbolLocation {
+            line: 1,
+            column: 10,
+        };
+        let token = Token::new(
+            TokenType::Identifier("test".to_string()),
+            (start.line, start.column),
+            (end.line, end.column),
+        );
+        assert_eq!(token.span().start, start);
+        assert_eq!(token.span().end, end);
+    }
+
+    #[test]
+    fn token_new_lexicographic_span_same_position() {
+        // Same line, same column should be valid
+        let location = SymbolLocation { line: 1, column: 5 };
+        let token = Token::new(
+            TokenType::Identifier("x".to_string()),
+            (location.line, location.column),
+            (location.line, location.column),
+        );
+        assert_eq!(token.span().start, location);
+        assert_eq!(token.span().end, location);
+    }
+
+    #[test]
+    fn token_new_lexicographic_span_different_lines() {
+        // Different lines: start.line < end.line should work regardless of columns
+        let start = SymbolLocation {
+            line: 1,
+            column: 20,
+        };
+        let end = SymbolLocation { line: 2, column: 5 };
+        let token = Token::new(
+            TokenType::Literal("multiline".to_string()),
+            (start.line, start.column),
+            (end.line, end.column),
+        );
+        assert_eq!(token.span().start, start);
+        assert_eq!(token.span().end, end);
+    }
+
+    #[test]
+    #[should_panic(expected = "span should be monotonically increasing")]
+    fn token_new_lexicographic_span_invalid_same_line() {
+        // Same line but end column before start column should panic
+        let start = SymbolLocation {
+            line: 1,
+            column: 10,
+        };
+        let end = SymbolLocation { line: 1, column: 5 };
+        let _ = Token::new(
+            TokenType::Identifier("invalid".to_string()),
+            (start.line, start.column),
+            (end.line, end.column),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "span should be monotonically increasing")]
+    fn token_new_lexicographic_span_invalid_reverse_lines() {
+        // End line before start line should panic
+        let start = SymbolLocation { line: 2, column: 5 };
+        let end = SymbolLocation {
+            line: 1,
+            column: 10,
+        };
+        let _ = Token::new(
+            TokenType::Identifier("invalid".to_string()),
+            (start.line, start.column),
+            (end.line, end.column),
+        );
     }
 }
