@@ -1687,4 +1687,202 @@ mod tests {
             assert_eq!(*token.r#type(), TokenType::RightBrace);
         }
     }
+
+    #[test]
+    fn comment_coalescing_adjacent_regular_comments() {
+        // Test that adjacent regular comments are coalesced
+        let input = "// First comment\n// Second comment\nidentifier";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let first_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::Comment(content) = first_token.r#type() {
+            assert!(content.contains(" First comment"));
+            assert!(content.contains(" Second comment"));
+            // Should be joined with newline
+            assert!(content.contains('\n'));
+        } else {
+            panic!(
+                "Expected coalesced comment token, got: {:?}",
+                first_token.r#type()
+            );
+        }
+
+        let second_token = lexer.next_token().unwrap().unwrap();
+        assert_eq!(
+            *second_token.r#type(),
+            TokenType::Identifier("identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn comment_coalescing_adjacent_doc_comments() {
+        // Test that adjacent doc comments are coalesced
+        let input = "/// First doc\n/// Second doc\nfn test() {}";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let first_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::DocComment(content) = first_token.r#type() {
+            assert!(content.contains(" First doc"));
+            assert!(content.contains(" Second doc"));
+            // Should be joined with newline
+            assert!(content.contains('\n'));
+        } else {
+            panic!(
+                "Expected coalesced doc comment token, got: {:?}",
+                first_token.r#type()
+            );
+        }
+    }
+
+    #[test]
+    fn comment_coalescing_mixed_comment_types_separate() {
+        // Test that regular comments and doc comments don't coalesce together
+        let input = "// Regular comment\n/// Doc comment\nidentifier";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let first_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::Comment(content) = first_token.r#type() {
+            assert!(content.contains(" Regular comment"));
+            assert!(!content.contains(" Doc comment"));
+        } else {
+            panic!(
+                "Expected regular comment token, got: {:?}",
+                first_token.r#type()
+            );
+        }
+
+        let second_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::DocComment(content) = second_token.r#type() {
+            assert!(content.contains(" Doc comment"));
+            assert!(!content.contains(" Regular comment"));
+        } else {
+            panic!(
+                "Expected doc comment token, got: {:?}",
+                second_token.r#type()
+            );
+        }
+
+        let third_token = lexer.next_token().unwrap().unwrap();
+        assert_eq!(
+            *third_token.r#type(),
+            TokenType::Identifier("identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn comment_coalescing_with_intervening_code() {
+        // Test that comments separated by code don't coalesce
+        let input = "// First comment\nlet x = 1;\n// Second comment";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let first_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::Comment(content) = first_token.r#type() {
+            assert!(content.contains(" First comment"));
+            assert!(!content.contains(" Second comment"));
+        } else {
+            panic!(
+                "Expected first comment token, got: {:?}",
+                first_token.r#type()
+            );
+        }
+
+        // Should get the 'let' identifier next
+        let second_token = lexer.next_token().unwrap().unwrap();
+        assert_eq!(
+            *second_token.r#type(),
+            TokenType::Identifier("let".to_string())
+        );
+    }
+
+    #[test]
+    fn comment_coalescing_multiple_adjacent() {
+        // Test coalescing of more than two comments
+        let input = "// First\n// Second\n// Third\ncode";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let comment_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::Comment(content) = comment_token.r#type() {
+            assert!(content.contains(" First"));
+            assert!(content.contains(" Second"));
+            assert!(content.contains(" Third"));
+            // Should have two newlines joining three comments
+            let newline_count = content.matches('\n').count();
+            assert_eq!(newline_count, 2);
+        } else {
+            panic!(
+                "Expected coalesced comment token, got: {:?}",
+                comment_token.r#type()
+            );
+        }
+    }
+
+    #[test]
+    fn comment_coalescing_spans_updated() {
+        // Test that coalesced comment spans cover the entire range
+        let input = "// Start comment\n// End comment\n";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let comment_token = lexer.next_token().unwrap().unwrap();
+        let span = comment_token.span();
+
+        // Should start at line 1, column 1 and end after the second comment
+        assert_eq!(span.start.line, 1);
+        assert_eq!(span.start.column, 1);
+        assert_eq!(span.end.line, 2);
+        // End column should be after "// End comment"
+        assert!(span.end.column > 10);
+    }
+
+    #[test]
+    fn comment_coalescing_empty_comments() {
+        // Test edge case with empty comments
+        let input = "//\n// Non-empty\ncode";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let comment_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::Comment(content) = comment_token.r#type() {
+            // Should coalesce empty comment with non-empty one
+            assert!(content.contains("\n Non-empty"));
+        } else {
+            panic!("Expected comment token, got: {:?}", comment_token.r#type());
+        }
+    }
+
+    #[test]
+    fn comment_coalescing_flush_on_eof() {
+        // Test that buffered comments are flushed at end of input
+        let input = "// Only comment";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let comment_token = lexer.next_token().unwrap().unwrap();
+        assert_eq!(
+            *comment_token.r#type(),
+            TokenType::Comment(" Only comment".to_string())
+        );
+
+        let eof_token = lexer.next_token().unwrap().unwrap();
+        assert_eq!(*eof_token.r#type(), TokenType::EOF);
+    }
+
+    #[test]
+    fn comment_coalescing_doc_comments_multiple() {
+        // Test multiple doc comment coalescing
+        let input = "/// Doc 1\n/// Doc 2\n/// Doc 3\nstruct Test;";
+        let mut lexer = Lexer::default_for_input(input);
+
+        let doc_comment_token = lexer.next_token().unwrap().unwrap();
+        if let TokenType::DocComment(content) = doc_comment_token.r#type() {
+            assert!(content.contains(" Doc 1"));
+            assert!(content.contains(" Doc 2"));
+            assert!(content.contains(" Doc 3"));
+            // Should have two newlines for three doc comments
+            let newline_count = content.matches('\n').count();
+            assert_eq!(newline_count, 2);
+        } else {
+            panic!(
+                "Expected coalesced doc comment token, got: {:?}",
+                doc_comment_token.r#type()
+            );
+        }
+    }
 }
