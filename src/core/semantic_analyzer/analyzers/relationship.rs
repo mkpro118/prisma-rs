@@ -13,8 +13,7 @@ use crate::core::semantic_analyzer::{
     diagnostics::{DiagnosticCode, SemanticDiagnostic},
     traits::PhaseAnalyzer,
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::collections::HashSet;
 
 // Relationship and RelationshipType are now imported from context
 
@@ -27,144 +26,15 @@ use std::sync::RwLock;
 /// - No conflicting relationship definitions
 /// - Proper naming of relationship fields
 ///
-/// The relationship analyzer uses the shared relationship graph from `AnalysisContext`.
-pub struct RelationshipAnalyzer {
-    /// Graph of all relationships found in the schema (temporary until refactored)
-    relationship_graph: RwLock<HashMap<String, Vec<Relationship>>>,
-
-    /// Track processed relationships to avoid duplicates
-    processed_relationships: RwLock<HashSet<String>>,
-}
+/// The relationship analyzer is now stateless and writes directly to the shared
+/// `RelationshipGraph` in the `AnalysisContext`, eliminating redundant internal state.
+pub struct RelationshipAnalyzer;
 
 impl RelationshipAnalyzer {
     /// Create a new relationship analyzer.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            relationship_graph: RwLock::new(HashMap::new()),
-            processed_relationships: RwLock::new(HashSet::new()),
-        }
-    }
-
-    /// Analyze all relationships in the schema.
-    pub fn analyze_schema_relationships(
-        &mut self,
-        schema: &Schema,
-        _context: &AnalysisContext,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // First pass: collect all @relation attributes
-        for declaration in &schema.declarations {
-            if let Declaration::Model(model) = declaration {
-                self.analyze_model_relationships(model, diagnostics);
-            }
-        }
-
-        // Second pass: validate relationship consistency
-        self.validate_relationship_consistency(diagnostics);
-    }
-
-    /// Analyze relationships for a single model.
-    pub fn analyze_model_relationships(
-        &mut self,
-        model: &crate::core::parser::ast::ModelDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        for member in &model.members {
-            if let ModelMember::Field(field) = member {
-                self.analyze_field_relationships(model, field, diagnostics);
-            }
-        }
-    }
-
-    /// Analyze relationships for a single field.
-    pub fn analyze_field_relationships(
-        &mut self,
-        model: &crate::core::parser::ast::ModelDecl,
-        field: &crate::core::parser::ast::FieldDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        for attr in &field.attrs {
-            if attr.name.parts.len() == 1
-                && attr.name.parts[0].text == "relation"
-            {
-                self.analyze_relation_attribute(
-                    model,
-                    field,
-                    attr,
-                    diagnostics,
-                );
-            }
-        }
-    }
-
-    /// Analyze a single `@relation` attribute.
-    ///
-    /// ## Panics
-    /// Panics if internal synchronization primitives are poisoned.
-    pub fn analyze_relation_attribute(
-        &mut self,
-        model: &crate::core::parser::ast::ModelDecl,
-        field: &crate::core::parser::ast::FieldDecl,
-        attr: &FieldAttribute,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Extract target model from field type
-        let target_model =
-            Self::extract_target_model_from_field_type(&field.r#type);
-
-        let Some(target_model) = target_model else {
-            diagnostics.push(SemanticDiagnostic::error(
-                field.span.clone(),
-                "Cannot determine target model for @relation attribute"
-                    .to_string(),
-                DiagnosticCode::InvalidRelation,
-            ));
-            return;
-        };
-
-        // Parse relation arguments
-        let relation_info = Self::parse_relation_arguments(attr, diagnostics);
-
-        // Create relationship ID for tracking
-        let relationship_id =
-            format!("{}_{}", model.name.text, field.name.text);
-
-        // Skip if already processed (avoid duplicates)
-        let Ok(processed) = self.processed_relationships.read() else {
-            return;
-        };
-        if processed.contains(&relationship_id) {
-            return;
-        }
-
-        // Validate referential actions first
-        Self::validate_referential_actions(&relation_info, diagnostics);
-
-        // Create relationship
-        let relationship = Relationship {
-            id: relationship_id.clone(),
-            from_model: model.name.text.clone(),
-            from_field: field.name.text.clone(),
-            to_model: target_model,
-            to_field: relation_info.name.clone(), // Use relation name if specified
-            relationship_type: Self::determine_relationship_type(field),
-            foreign_keys: relation_info.fields.unwrap_or_default(),
-            references: relation_info.references.unwrap_or_default(),
-            span: attr.span.clone(),
-        };
-
-        // Track as processed
-        if let Ok(mut set) = self.processed_relationships.write() {
-            set.insert(relationship_id);
-        }
-
-        // Add to graph
-        if let Ok(mut map) = self.relationship_graph.write() {
-            map.entry(model.name.text.clone())
-                .or_default()
-                .push(relationship);
-        }
+        Self
     }
 
     /// Extract the target model name from a field type.
@@ -324,224 +194,6 @@ impl RelationshipAnalyzer {
         }
     }
 
-    /// Validate consistency of all relationships.
-    pub fn validate_relationship_consistency(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Check for missing back-references
-        self.validate_back_references(diagnostics);
-
-        // Check for conflicting relationships
-        self.validate_relationship_conflicts(diagnostics);
-
-        // Check foreign key consistency
-        self.validate_foreign_key_consistency(diagnostics);
-    }
-
-    /// Validate that relationships have proper back-references.
-    ///
-    /// ## Panics
-    /// Panics if internal synchronization primitives are poisoned.
-    pub fn validate_back_references(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // For each relationship, check if the target model has a back-reference
-        let Ok(map) = self.relationship_graph.read() else {
-            return;
-        };
-        for (from_model, relationships) in map.iter() {
-            for relationship in relationships {
-                // Skip self-referential relations for now
-                if relationship.from_model == relationship.to_model {
-                    continue;
-                }
-
-                // Check if target model has a relationship back to source
-                if let Some(target_relationships) =
-                    map.get(&relationship.to_model)
-                {
-                    let has_back_reference =
-                        target_relationships.iter().any(|target_rel| {
-                            target_rel.to_model == relationship.from_model
-                        });
-
-                    // For explicit bidirectional relations (those with 'name' parameter),
-                    // we should always have a back-reference
-                    if !relationship.foreign_keys.is_empty()
-                        && !has_back_reference
-                    {
-                        // This is likely a unidirectional relation with foreign keys,
-                        // which should have a back-reference
-                        diagnostics.push(
-                            SemanticDiagnostic::error(
-                                relationship.span.clone(),
-                                format!(
-                                    "Relationship from '{}' to '{}' is missing a back-reference in model '{}'",
-                                    from_model, relationship.to_model, relationship.to_model
-                                ),
-                                DiagnosticCode::MissingBackReference,
-                            )
-                            .with_suggestion(
-                                format!(
-                                    "Add a field in model '{}' that references '{}'",
-                                    relationship.to_model, from_model
-                                )
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Validate that there are no conflicting relationship definitions.
-    ///
-    /// ## Panics
-    /// Panics if internal synchronization primitives are poisoned.
-    pub fn validate_relationship_conflicts(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Check for multiple relationships between the same pair of models
-        // with potentially conflicting configurations
-        let Ok(map) = self.relationship_graph.read() else {
-            return;
-        };
-        for relationships in map.values() {
-            // Group relationships by target model
-            let mut target_groups: HashMap<&String, Vec<&Relationship>> =
-                HashMap::new();
-            for relationship in relationships {
-                target_groups
-                    .entry(&relationship.to_model)
-                    .or_default()
-                    .push(relationship);
-            }
-
-            // Check each group for conflicts
-            for (target_model, group) in target_groups {
-                if group.len() > 1 {
-                    // Multiple relationships to same target - check for conflicts
-                    for i in 0..group.len() {
-                        for j in i + 1..group.len() {
-                            let rel1 = group[i];
-                            let rel2 = group[j];
-
-                            // Check for conflicting foreign keys
-                            if !rel1.foreign_keys.is_empty()
-                                && !rel2.foreign_keys.is_empty()
-                            {
-                                let has_overlapping_keys = rel1
-                                    .foreign_keys
-                                    .iter()
-                                    .any(|key| rel2.foreign_keys.contains(key));
-
-                                if has_overlapping_keys {
-                                    diagnostics.push(
-                                        SemanticDiagnostic::error(
-                                            rel1.span.clone(),
-                                            format!(
-                                                "Conflicting relationships from '{}' to '{}': fields '{}' and '{}' share foreign keys",
-                                                rel1.from_model, target_model, rel1.from_field, rel2.from_field
-                                            ),
-                                            DiagnosticCode::ConflictingRelations,
-                                        )
-                                        .with_suggestion(
-                                            "Use different foreign key fields for each relationship".to_string()
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Validate that foreign keys are consistent.
-    ///
-    /// ## Panics
-    /// Panics if internal synchronization primitives are poisoned.
-    pub fn validate_foreign_key_consistency(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        let Ok(map) = self.relationship_graph.read() else {
-            return;
-        };
-        for relationships in map.values() {
-            for relationship in relationships {
-                // Validate that foreign keys and references have matching lengths
-                if !relationship.foreign_keys.is_empty()
-                    && !relationship.references.is_empty()
-                    && relationship.foreign_keys.len()
-                        != relationship.references.len()
-                {
-                    diagnostics.push(
-                            SemanticDiagnostic::error(
-                                relationship.span.clone(),
-                                format!(
-                                    "Relationship '{}' has mismatched foreign keys and references: {} fields vs {} references",
-                                    relationship.id,
-                                    relationship.foreign_keys.len(),
-                                    relationship.references.len()
-                                ),
-                                DiagnosticCode::InvalidRelation,
-                            )
-                            .with_suggestion(
-                                "Ensure the 'fields' and 'references' arrays have the same number of items".to_string()
-                            ),
-                        );
-                }
-
-                // Validate that foreign keys are specified for Many-to-One relationships
-                if matches!(
-                    relationship.relationship_type,
-                    RelationshipType::ManyToOne
-                ) && relationship.foreign_keys.is_empty()
-                {
-                    diagnostics.push(
-                            SemanticDiagnostic::error(
-                                relationship.span.clone(),
-                                format!(
-                                    "Many-to-one relationship '{}' requires foreign key fields to be specified",
-                                    relationship.id
-                                ),
-                                DiagnosticCode::InvalidRelation,
-                            )
-                            .with_suggestion(
-                                "Add 'fields' and 'references' to the @relation attribute".to_string()
-                            ),
-                        );
-                }
-
-                // Validate one-to-many relationships don't have foreign keys
-                if matches!(
-                    relationship.relationship_type,
-                    RelationshipType::OneToMany
-                ) && !relationship.foreign_keys.is_empty()
-                {
-                    diagnostics.push(
-                            SemanticDiagnostic::warning(
-                                relationship.span.clone(),
-                                format!(
-                                    "One-to-many relationship '{}' should not specify foreign key fields",
-                                    relationship.id
-                                ),
-                                DiagnosticCode::InvalidRelation,
-                            )
-                            .with_suggestion(
-                                "Remove 'fields' and 'references' from the @relation attribute".to_string()
-                            ),
-                        );
-                }
-            }
-        }
-    }
-
     /// Extract string value from an argument expression.
     fn extract_string_argument_value(
         value: &crate::core::parser::ast::Expr,
@@ -630,18 +282,6 @@ impl RelationshipAnalyzer {
             ));
         }
     }
-
-    /// Get a snapshot of the relationship graph.
-    ///
-    /// ## Panics
-    /// Panics if internal synchronization primitives are poisoned.
-    #[must_use]
-    pub fn relationship_graph(&self) -> HashMap<String, Vec<Relationship>> {
-        self.relationship_graph
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default()
-    }
 }
 
 impl Default for RelationshipAnalyzer {
@@ -662,22 +302,14 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
     ) -> PhaseResult {
         let mut diagnostics = Vec::new();
 
-        // Clear previous analysis state
-        if let Ok(mut g) = self.relationship_graph.write() {
-            g.clear();
-        }
-        if let Ok(mut g) = self.processed_relationships.write() {
-            g.clear();
+        // Clear the shared relationship graph at the start of analysis
+        if let Ok(mut relationship_graph) = context.relationship_graph.write() {
+            relationship_graph.relationships.clear();
+            relationship_graph.model_relationships.clear();
         }
 
-        // Clear shared relationship graph snapshot as well
-        if let Ok(mut g) = context.relationship_graph.write() {
-            g.relationships.clear();
-            g.model_relationships.clear();
-        }
-
-        // Analyze relationships
-        self.analyze_schema_relationships_refcell(
+        // Analyze all relationships and write directly to shared context
+        self.analyze_schema_relationships_stateless(
             schema,
             context,
             &mut diagnostics,
@@ -692,123 +324,201 @@ impl PhaseAnalyzer for RelationshipAnalyzer {
     }
 
     fn supports_parallel_execution(&self) -> bool {
-        // Relationship analysis modifies shared state, so no parallelism
+        // Relationship analysis writes to shared state but can potentially support parallelism
+        // with proper synchronization. For now, keeping it false for safety.
         false
     }
 }
 
 impl RelationshipAnalyzer {
-    /// Relationship analysis using interior mutability (`RwLock`).
-    fn analyze_schema_relationships_refcell(
+    /// Stateless relationship analysis that writes directly to shared context.
+    fn analyze_schema_relationships_stateless(
         &self,
         schema: &Schema,
         context: &AnalysisContext,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
-        // First pass: collect all @relation attributes
+        // Keep track of processed relationships to avoid duplicates
+        let mut processed_relationships = HashSet::new();
+
+        // First pass: collect all @relation attributes and write to shared context
         for declaration in &schema.declarations {
             if let Declaration::Model(model) = declaration {
-                self.analyze_model_relationships_refcell(
-                    context,
+                self.analyze_model_relationships_stateless(
                     model,
+                    context,
+                    &mut processed_relationships,
                     diagnostics,
                 );
             }
         }
+
+        // Second pass: validate relationship consistency using shared context
+        self.validate_relationship_consistency_from_context(
+            context,
+            diagnostics,
+        );
     }
 
-    /// Model relationship analysis helper.
-    fn analyze_model_relationships_refcell(
+    /// Analyze relationships for a single model (stateless version).
+    fn analyze_model_relationships_stateless(
         &self,
-        context: &AnalysisContext,
         model: &crate::core::parser::ast::ModelDecl,
+        context: &AnalysisContext,
+        processed_relationships: &mut HashSet<String>,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         for member in &model.members {
             if let ModelMember::Field(field) = member {
-                self.analyze_field_relationships_refcell(
-                    context,
+                self.analyze_field_relationships_stateless(
                     model,
                     field,
+                    context,
+                    processed_relationships,
                     diagnostics,
                 );
             }
         }
     }
 
-    /// Field relationship analysis helper.
-    fn analyze_field_relationships_refcell(
+    /// Analyze relationships for a single field (stateless version).
+    fn analyze_field_relationships_stateless(
         &self,
-        context: &AnalysisContext,
         model: &crate::core::parser::ast::ModelDecl,
         field: &crate::core::parser::ast::FieldDecl,
+        context: &AnalysisContext,
+        processed_relationships: &mut HashSet<String>,
         diagnostics: &mut Vec<SemanticDiagnostic>,
     ) {
         for attr in &field.attrs {
             if attr.name.parts.len() == 1
                 && attr.name.parts[0].text == "relation"
             {
-                if let Some(target) =
-                    Self::extract_target_model_from_field_type(&field.r#type)
-                {
-                    let id = format!("{}_{}", model.name.text, field.name.text);
-                    let target_name = target.clone();
-                    let relationship = Relationship {
-                        id: id.clone(),
-                        from_model: model.name.text.clone(),
-                        from_field: field.name.text.clone(),
-                        to_model: target,
-                        to_field: None,
-                        relationship_type: Self::determine_relationship_type(
-                            field,
-                        ),
-                        foreign_keys: Vec::new(),
-                        references: Vec::new(),
-                        span: field.span.clone(),
-                    };
-
-                    if let Ok(mut g) = self.relationship_graph.write() {
-                        g.entry(model.name.text.clone())
-                            .or_default()
-                            .push(relationship);
-                    }
-
-                    // Also reflect relationship in shared context graph
-                    if let Ok(mut g) = context.relationship_graph.write() {
-                        g.relationships.insert(
-                            id.clone(),
-                            Relationship {
-                                id: id.clone(),
-                                from_model: model.name.text.clone(),
-                                from_field: field.name.text.clone(),
-                                to_model: target_name.clone(),
-                                to_field: None,
-                                relationship_type:
-                                    Self::determine_relationship_type(field),
-                                foreign_keys: Vec::new(),
-                                references: Vec::new(),
-                                span: field.span.clone(),
-                            },
-                        );
-                        g.model_relationships
-                            .entry(model.name.text.clone())
-                            .or_default()
-                            .push(id);
-                    }
-                } else {
-                    let diagnostic = SemanticDiagnostic::error(
-                        field.span.clone(),
-                        "Invalid relationship field type".to_string(),
-                        DiagnosticCode::InvalidRelation,
-                    );
-                    diagnostics.push(diagnostic);
-                }
+                self.analyze_relation_attribute_stateless(
+                    model,
+                    field,
+                    attr,
+                    context,
+                    processed_relationships,
+                    diagnostics,
+                );
             }
         }
     }
 
-    // The immutable (copy-out) variant was removed for simplicity since the
-    // analyzer already uses interior mutability with RwLock.
+    /// Analyze a single @relation attribute (stateless version).
+    fn analyze_relation_attribute_stateless(
+        &self,
+        model: &crate::core::parser::ast::ModelDecl,
+        field: &crate::core::parser::ast::FieldDecl,
+        attr: &FieldAttribute,
+        context: &AnalysisContext,
+        processed_relationships: &mut HashSet<String>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Extract target model from field type
+        let Some(target_model) =
+            Self::extract_target_model_from_field_type(&field.r#type)
+        else {
+            diagnostics.push(SemanticDiagnostic::error(
+                field.span.clone(),
+                "Cannot determine target model for @relation attribute"
+                    .to_string(),
+                DiagnosticCode::InvalidRelation,
+            ));
+            return;
+        };
+
+        // Create relationship ID for tracking
+        let relationship_id =
+            format!("{}_{}", model.name.text, field.name.text);
+
+        // Skip if already processed (avoid duplicates)
+        if processed_relationships.contains(&relationship_id) {
+            return;
+        }
+
+        // Parse relation arguments
+        let relation_info = Self::parse_relation_arguments(attr, diagnostics);
+
+        // Validate referential actions
+        Self::validate_referential_actions(&relation_info, diagnostics);
+
+        // Create relationship
+        let relationship = Relationship {
+            id: relationship_id.clone(),
+            from_model: model.name.text.clone(),
+            from_field: field.name.text.clone(),
+            to_model: target_model,
+            to_field: Some(
+                relation_info
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| field.name.text.clone()),
+            ),
+            relationship_type: Self::determine_relationship_type(field),
+            foreign_keys: relation_info.fields.unwrap_or_default(),
+            references: relation_info.references.unwrap_or_default(),
+            span: attr.span.clone(),
+        };
+
+        // Mark as processed
+        processed_relationships.insert(relationship_id.clone());
+
+        // Write directly to shared context
+        if let Ok(mut relationship_graph) = context.relationship_graph.write() {
+            // Add to relationships map
+            relationship_graph
+                .relationships
+                .insert(relationship_id, relationship.clone());
+
+            // Add to model relationships map
+            relationship_graph
+                .model_relationships
+                .entry(model.name.text.clone())
+                .or_default()
+                .push(relationship.id.clone());
+        }
+    }
+
+    /// Validate relationship consistency using shared context data.
+    fn validate_relationship_consistency_from_context(
+        &self,
+        context: &AnalysisContext,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Access the shared relationship graph
+        let Ok(relationship_graph) = context.relationship_graph.read() else {
+            return;
+        };
+
+        // Check for missing back-references and other consistency issues
+        for relationship in relationship_graph.relationships.values() {
+            // Look for corresponding back-reference
+            let back_ref_found =
+                relationship_graph.relationships.values().any(|other| {
+                    other.from_model == relationship.to_model
+                        && other.to_model == relationship.from_model
+                        && other.id != relationship.id // Not the same relationship
+                });
+
+            if !back_ref_found
+                && relationship.relationship_type == RelationshipType::OneToMany
+            {
+                // This might be intentional for some one-to-many relationships
+                // For now, just add an informational diagnostic
+                diagnostics.push(SemanticDiagnostic::info(
+                    relationship.span.clone(),
+                    format!(
+                        "Relationship from '{}' to '{}' may need a corresponding back-reference",
+                        relationship.from_model,
+                        relationship.to_model
+                    ),
+                    DiagnosticCode::MissingBackReference,
+                ));
+            }
+        }
+    }
 }
 
 /// Information about a relationship between models.
@@ -869,7 +579,6 @@ mod tests {
             &["symbol-collection", "type-resolution"]
         );
         assert!(!analyzer.supports_parallel_execution());
-        assert!(analyzer.relationship_graph().is_empty());
     }
 
     #[test]
@@ -1001,7 +710,6 @@ mod tests {
 
         // Empty schema should not have relationship errors
         assert!(result.diagnostics.is_empty());
-        assert!(analyzer.relationship_graph().is_empty());
     }
 
     #[test]
@@ -1041,7 +749,6 @@ mod tests {
 
         // Model without relations should not have errors
         assert!(result.diagnostics.is_empty());
-        assert!(analyzer.relationship_graph().is_empty());
     }
 
     #[test]
@@ -1084,7 +791,6 @@ mod tests {
 
         // Field without @relation attribute should not create relationships
         assert!(result.diagnostics.is_empty());
-        assert!(analyzer.relationship_graph().is_empty());
     }
 
     #[test]
@@ -1243,18 +949,25 @@ mod tests {
         let ctx = AnalysisContext::new_test(&AnalyzerOptions::default());
         let result = analyzer.analyze(&schema, &ctx);
 
-        assert!(result.diagnostics.is_empty());
+        // Should not have any errors or warnings, info diagnostics are acceptable
+        let error_diagnostics: Vec<_> = result.diagnostics.iter()
+            .filter(|d| matches!(d.severity, crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity::Error | crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity::Warning))
+            .collect();
+        if !error_diagnostics.is_empty() {
+            for diagnostic in &error_diagnostics {
+                eprintln!("Error/Warning Diagnostic: {diagnostic:?}");
+            }
+        }
+        assert!(error_diagnostics.is_empty());
 
-        let graph = analyzer.relationship_graph();
-        let user_relationships = graph.get("User");
-        assert!(user_relationships.is_some());
-        let relationships = user_relationships.unwrap();
-        assert_eq!(relationships.len(), 1);
-        assert_eq!(relationships[0].to_model, "Post");
-        assert_eq!(
-            relationships[0].relationship_type,
-            RelationshipType::OneToMany
-        );
+        // Verify relationship was created in the shared context
+        let relationship_graph = ctx.relationship_graph.read().unwrap();
+        assert_eq!(relationship_graph.relationships.len(), 1);
+        let relationship =
+            relationship_graph.relationships.values().next().unwrap();
+        assert_eq!(relationship.from_model, "User");
+        assert_eq!(relationship.to_model, "Post");
+        assert_eq!(relationship.relationship_type, RelationshipType::OneToMany);
     }
 
     #[test]
@@ -1278,16 +991,9 @@ mod tests {
     }
 
     #[test]
-    fn test_analyzer_default() {
-        let analyzer = RelationshipAnalyzer::default();
-        assert!(analyzer.relationship_graph().is_empty());
-    }
-
-    #[test]
     fn test_relationship_graph_access() {
-        let analyzer = RelationshipAnalyzer::new();
-        let graph = analyzer.relationship_graph();
-        assert!(graph.is_empty());
+        let _analyzer = RelationshipAnalyzer::new();
+        // Analyzer is now stateless and doesn't maintain internal graph
     }
 
     #[test]
@@ -1424,6 +1130,310 @@ mod tests {
         assert_eq!(
             diagnostics[0].diagnostic_code,
             DiagnosticCode::InvalidAttributeArgument
+        );
+    }
+
+    #[test]
+    fn test_stateless_analyzer_writes_to_shared_context() {
+        // Test that the new stateless analyzer writes directly to shared context
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // Create a schema with a relationship
+        let schema = Schema {
+            declarations: vec![Declaration::Model(ModelDecl {
+                docs: None,
+                name: create_test_ident("User"),
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("post"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("Post")],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    }),
+                    optional: true,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("relation")],
+                            span: sp(),
+                        },
+                        args: None,
+                        span: sp(),
+                    }],
+                    span: sp(),
+                })],
+                attrs: Vec::new(),
+                span: sp(),
+            })],
+            span: sp(),
+        };
+
+        let analyzer = RelationshipAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new_test(&options);
+
+        // The shared relationship graph should be empty initially
+        {
+            let relationship_graph = context.relationship_graph.read().unwrap();
+            assert!(relationship_graph.relationships.is_empty());
+        }
+
+        let result = analyzer.analyze(&schema, &context);
+
+        // After analysis, the shared context should contain the relationship
+        {
+            let relationship_graph = context.relationship_graph.read().unwrap();
+            assert!(
+                !relationship_graph.relationships.is_empty(),
+                "Stateless analyzer should write relationships to shared context"
+            );
+
+            // Check that the relationship was created correctly
+            let relationship =
+                relationship_graph.relationships.values().next().unwrap();
+            assert_eq!(relationship.from_model, "User");
+            assert_eq!(relationship.to_model, "Post");
+            assert_eq!(relationship.from_field, "post");
+        }
+
+        // Should have successful result
+        assert!(result.diagnostics.is_empty() || result.diagnostics.iter().all(|d| {
+            // Allow info-level diagnostics (like missing back-references)
+            matches!(d.severity, crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity::Info)
+        }));
+    }
+
+    #[test]
+    fn test_stateless_analyzer_thread_safety() {
+        // Test that the stateless RelationshipAnalyzer is thread-safe
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+        use std::sync::Arc;
+        use std::thread;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        let schema = Arc::new(Schema {
+            declarations: vec![Declaration::Model(ModelDecl {
+                docs: None,
+                name: create_test_ident("TestModel"),
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("id"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("Int")],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: Vec::new(),
+                    span: sp(),
+                })],
+                attrs: Vec::new(),
+                span: sp(),
+            })],
+            span: sp(),
+        });
+
+        let analyzer = Arc::new(RelationshipAnalyzer::new());
+        let options = AnalyzerOptions::default();
+        let context = Arc::new(AnalysisContext::new_test(&options));
+
+        let mut handles = Vec::new();
+
+        // Run the analyzer from multiple threads
+        for _ in 0..4 {
+            let schema_clone = Arc::clone(&schema);
+            let analyzer_clone = Arc::clone(&analyzer);
+            let context_clone = Arc::clone(&context);
+
+            let handle = thread::spawn(move || {
+                analyzer_clone.analyze(&schema_clone, &context_clone)
+            });
+            handles.push(handle);
+        }
+
+        // All threads should complete successfully without race conditions
+        for handle in handles {
+            let result = handle.join().expect("Thread should not panic");
+            // Result should be consistent (no relationships in this simple schema)
+            assert!(result.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_no_internal_state_after_refactor() {
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        let sp = || SymbolSpan {
+            start: SymbolLocation { line: 1, column: 1 },
+            end: SymbolLocation {
+                line: 1,
+                column: 10,
+            },
+        };
+
+        // Test that the analyzer no longer has internal state that could cause issues
+        let analyzer1 = RelationshipAnalyzer::new();
+        let analyzer2 = RelationshipAnalyzer::new();
+
+        // Both analyzers should be identical and stateless
+        assert_eq!(analyzer1.phase_name(), analyzer2.phase_name());
+        assert_eq!(analyzer1.dependencies(), analyzer2.dependencies());
+        assert_eq!(
+            analyzer1.supports_parallel_execution(),
+            analyzer2.supports_parallel_execution()
+        );
+
+        let schema = Schema {
+            declarations: Vec::new(),
+            span: sp(),
+        };
+
+        let options = AnalyzerOptions::default();
+        let context1 = AnalysisContext::new_test(&options);
+        let context2 = AnalysisContext::new_test(&options);
+
+        let result1 = analyzer1.analyze(&schema, &context1);
+        let result2 = analyzer2.analyze(&schema, &context2);
+
+        // Results should be identical for empty schema
+        assert_eq!(result1.diagnostics.len(), result2.diagnostics.len());
+    }
+
+    #[test]
+    fn test_relationship_consistency_validation() {
+        // Test the new stateless relationship consistency validation
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use crate::core::semantic_analyzer::AnalyzerOptions;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // Create a schema with one-way relationship (should generate info diagnostic)
+        let schema = Schema {
+            declarations: vec![
+                Declaration::Model(ModelDecl {
+                    docs: None,
+                    name: create_test_ident("User"),
+                    members: vec![ModelMember::Field(FieldDecl {
+                        docs: None,
+                        name: create_test_ident("posts"),
+                        r#type: TypeRef::List(ListType {
+                            inner: Box::new(TypeRef::Named(NamedType {
+                                name: QualifiedIdent {
+                                    parts: vec![create_test_ident("Post")],
+                                    span: sp(),
+                                },
+                                span: sp(),
+                            })),
+                            span: sp(),
+                        }),
+                        optional: false,
+                        modifiers: Vec::new(),
+                        attrs: vec![FieldAttribute {
+                            docs: None,
+                            name: QualifiedIdent {
+                                parts: vec![create_test_ident("relation")],
+                                span: sp(),
+                            },
+                            args: None,
+                            span: sp(),
+                        }],
+                        span: sp(),
+                    })],
+                    attrs: Vec::new(),
+                    span: sp(),
+                }),
+                Declaration::Model(ModelDecl {
+                    docs: None,
+                    name: create_test_ident("Post"),
+                    members: vec![ModelMember::Field(FieldDecl {
+                        docs: None,
+                        name: create_test_ident("title"),
+                        r#type: TypeRef::Named(NamedType {
+                            name: QualifiedIdent {
+                                parts: vec![create_test_ident("String")],
+                                span: sp(),
+                            },
+                            span: sp(),
+                        }),
+                        optional: false,
+                        modifiers: Vec::new(),
+                        attrs: Vec::new(),
+                        span: sp(),
+                    })],
+                    attrs: Vec::new(),
+                    span: sp(),
+                }),
+            ],
+            span: sp(),
+        };
+
+        let analyzer = RelationshipAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new_test(&options);
+
+        let result = analyzer.analyze(&schema, &context);
+
+        // Should potentially have an info diagnostic about missing back-reference
+        let has_back_ref_info = result.diagnostics.iter().any(|d| {
+            d.message.contains("back-reference") && 
+            matches!(d.severity, crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity::Info)
+        });
+
+        // This is acceptable (info-level diagnostics are fine)
+        if has_back_ref_info {
+            println!(
+                "Got expected info diagnostic about missing back-reference"
+            );
+        }
+
+        // No errors should occur
+        let has_errors = result.diagnostics.iter().any(|d| {
+            matches!(d.severity, crate::core::semantic_analyzer::diagnostics::DiagnosticSeverity::Error)
+        });
+        assert!(
+            !has_errors,
+            "Should not have errors for valid relationship schema"
         );
     }
 }

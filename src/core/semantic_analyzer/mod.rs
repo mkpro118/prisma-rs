@@ -33,6 +33,8 @@
 //! }
 //! ```
 
+use compiler_macros::EnumKindName;
+
 pub mod analyzer;
 pub mod analyzers;
 pub mod context;
@@ -113,7 +115,7 @@ pub struct AnalyzerOptions {
 }
 
 /// Supported database providers for provider-specific validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumKindName)]
 pub enum DatabaseProvider {
     PostgreSQL,
     MySQL,
@@ -142,20 +144,6 @@ impl Default for AnalyzerOptions {
     }
 }
 
-impl DatabaseProvider {
-    /// Get the provider name as a string.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DatabaseProvider::PostgreSQL => "postgresql",
-            DatabaseProvider::MySQL => "mysql",
-            DatabaseProvider::SQLite => "sqlite",
-            DatabaseProvider::SQLServer => "sqlserver",
-            DatabaseProvider::MongoDB => "mongodb",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,11 +165,11 @@ mod tests {
 
     #[test]
     fn test_database_provider_as_str() {
-        assert_eq!(DatabaseProvider::PostgreSQL.as_str(), "postgresql");
-        assert_eq!(DatabaseProvider::MySQL.as_str(), "mysql");
-        assert_eq!(DatabaseProvider::SQLite.as_str(), "sqlite");
-        assert_eq!(DatabaseProvider::SQLServer.as_str(), "sqlserver");
-        assert_eq!(DatabaseProvider::MongoDB.as_str(), "mongodb");
+        assert_eq!(DatabaseProvider::PostgreSQL.name(), "PostgreSQL");
+        assert_eq!(DatabaseProvider::MySQL.name(), "MySQL");
+        assert_eq!(DatabaseProvider::SQLite.name(), "SQLite");
+        assert_eq!(DatabaseProvider::SQLServer.name(), "SQLServer");
+        assert_eq!(DatabaseProvider::MongoDB.name(), "MongoDB");
     }
 
     #[test]
@@ -304,8 +292,7 @@ mod tests {
             assert_eq!(options.target_provider, provider);
 
             if let Some(p) = provider {
-                // Test that we can call as_str on the provider
-                let _ = p.as_str();
+                let _ = p.name();
             }
         }
     }

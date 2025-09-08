@@ -14,6 +14,7 @@ use crate::core::semantic_analyzer::{
     traits::PhaseAnalyzer,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 /// Represents an attribute definition with its validation rules.
 #[derive(Debug, Clone)]
@@ -64,9 +65,6 @@ pub enum AttributeContext {
 pub struct AttributeValidationAnalyzer {
     /// Registry of all known attributes and their definitions
     attribute_registry: HashMap<String, AttributeDefinition>,
-
-    /// Track attribute usage for conflict detection
-    attribute_usage: HashMap<String, Vec<String>>,
 }
 
 impl AttributeValidationAnalyzer {
@@ -75,7 +73,6 @@ impl AttributeValidationAnalyzer {
     pub fn new() -> Self {
         let mut analyzer = Self {
             attribute_registry: HashMap::new(),
-            attribute_usage: HashMap::new(),
         };
         analyzer.initialize_attribute_registry();
         analyzer
@@ -282,171 +279,6 @@ impl AttributeValidationAnalyzer {
             .insert(definition.name.clone(), definition);
     }
 
-    /// Analyze all attributes in the schema.
-    pub fn analyze_schema_attributes(
-        &self,
-        _schema: &Schema,
-        _context: &AnalysisContext,
-        _diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Create local usage tracking for this analysis run
-        let _attribute_usage: HashMap<String, Vec<String>> = HashMap::new();
-
-        // Analyze all declarations
-        // TODO: Re-implement these with thread-safe patterns
-        /*
-        for declaration in &schema.declarations {
-            match declaration {
-                Declaration::Model(model) => {
-                    self.analyze_model_attributes(model, diagnostics);
-                }
-                Declaration::Enum(enum_decl) => {
-                    self.analyze_enum_attributes(enum_decl, diagnostics);
-                }
-                Declaration::Datasource(datasource) => {
-                    Self::analyze_datasource_attributes(
-                        datasource,
-                        diagnostics,
-                    );
-                }
-                Declaration::Generator(generator) => {
-                    Self::analyze_generator_attributes(generator, diagnostics);
-                }
-                Declaration::Type(_) => {
-                    // Type aliases don't have attributes in current Prisma
-                }
-            }
-        }
-
-        // After analyzing all attributes, check for conflicts
-        // self.validate_attribute_conflicts(diagnostics);
-        */
-    }
-
-    /// Analyze attributes for a model.
-    pub fn analyze_model_attributes(
-        &mut self,
-        model: &crate::core::parser::ast::ModelDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Analyze model-level attributes
-        for attr in &model.attrs {
-            self.analyze_single_attribute(
-                &attr
-                    .name
-                    .parts
-                    .first()
-                    .map_or(String::new(), |p| p.text.clone()),
-                attr.args.as_ref(),
-                &attr.span,
-                AttributeContext::Model,
-                &format!("model {}", model.name.text),
-                diagnostics,
-            );
-        }
-
-        // Analyze member attributes
-        for member in &model.members {
-            match member {
-                ModelMember::Field(field) => {
-                    for attr in &field.attrs {
-                        self.analyze_single_attribute(
-                            &attr
-                                .name
-                                .parts
-                                .first()
-                                .map_or(String::new(), |p| p.text.clone()),
-                            attr.args.as_ref(),
-                            &attr.span,
-                            AttributeContext::Field,
-                            &format!(
-                                "field {}.{}",
-                                model.name.text, field.name.text
-                            ),
-                            diagnostics,
-                        );
-                    }
-                }
-                ModelMember::BlockAttribute(attr) => {
-                    self.analyze_single_attribute(
-                        &attr
-                            .name
-                            .parts
-                            .first()
-                            .map_or(String::new(), |p| p.text.clone()),
-                        attr.args.as_ref(),
-                        &attr.span,
-                        AttributeContext::Model,
-                        &format!("model {}", model.name.text),
-                        diagnostics,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Analyze attributes for an enum.
-    pub fn analyze_enum_attributes(
-        &mut self,
-        enum_decl: &crate::core::parser::ast::EnumDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Analyze enum-level attributes
-        for attr in &enum_decl.attrs {
-            self.analyze_single_attribute(
-                &attr
-                    .name
-                    .parts
-                    .first()
-                    .map_or(String::new(), |p| p.text.clone()),
-                attr.args.as_ref(),
-                &attr.span,
-                AttributeContext::Enum,
-                &format!("enum {}", enum_decl.name.text),
-                diagnostics,
-            );
-        }
-
-        // Analyze enum members
-        for member in &enum_decl.members {
-            match member {
-                EnumMember::Value(value) => {
-                    for attr in &value.attrs {
-                        self.analyze_single_attribute(
-                            &attr
-                                .name
-                                .parts
-                                .first()
-                                .map_or(String::new(), |p| p.text.clone()),
-                            attr.args.as_ref(),
-                            &attr.span,
-                            AttributeContext::EnumValue,
-                            &format!(
-                                "enum value {}.{}",
-                                enum_decl.name.text, value.name.text
-                            ),
-                            diagnostics,
-                        );
-                    }
-                }
-                EnumMember::BlockAttribute(attr) => {
-                    self.analyze_single_attribute(
-                        &attr
-                            .name
-                            .parts
-                            .first()
-                            .map_or(String::new(), |p| p.text.clone()),
-                        attr.args.as_ref(),
-                        &attr.span,
-                        AttributeContext::Enum,
-                        &format!("enum {}", enum_decl.name.text),
-                        diagnostics,
-                    );
-                }
-            }
-        }
-    }
-
     /// Analyze attributes for a datasource.
     #[expect(clippy::ptr_arg)]
     pub fn analyze_datasource_attributes(
@@ -465,68 +297,6 @@ impl AttributeValidationAnalyzer {
     ) {
         // Generators don't currently have attributes in Prisma
         // This is here for future extensibility
-    }
-
-    /// Analyze a single attribute.
-    pub fn analyze_single_attribute(
-        &mut self,
-        attr_name: &str,
-        attr_args: Option<&crate::core::parser::ast::ArgList>,
-        attr_span: &SymbolSpan,
-        context: AttributeContext,
-        location: &str,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Check if attribute exists
-        let Some(definition) = self.attribute_registry.get(attr_name) else {
-            diagnostics.push(SemanticDiagnostic::error(
-                attr_span.clone(),
-                format!("Unknown attribute '@{attr_name}' on {location}"),
-                DiagnosticCode::UnknownAttribute,
-            ).with_suggestion("Check the attribute name spelling and Prisma documentation".to_string()));
-            return;
-        };
-
-        // Check if attribute is used in valid context
-        if !definition.valid_contexts.contains(&context) {
-            let valid_contexts: Vec<String> = definition
-                .valid_contexts
-                .iter()
-                .map(|c| format!("{c:?}").to_lowercase())
-                .collect();
-
-            diagnostics.push(SemanticDiagnostic::error(
-                attr_span.clone(),
-                format!(
-                    "Attribute '@{attr_name}' cannot be used on {location}. Valid contexts: {}",
-                    valid_contexts.join(", ")
-                ),
-                DiagnosticCode::AttributeNotApplicable,
-            ));
-            return;
-        }
-
-        // Check for deprecated attributes
-        if definition.deprecated {
-            diagnostics.push(SemanticDiagnostic::deprecated_feature(
-                attr_span.clone(),
-                attr_name,
-                definition.replacement.as_deref(),
-            ));
-        }
-
-        // Validate arguments
-        Self::validate_attribute_arguments(
-            attr_name,
-            attr_args,
-            attr_span,
-            definition,
-            diagnostics,
-        );
-
-        // Track attribute usage for conflict detection
-        // TODO: Re-implement with thread-safe approach
-        // self.track_attribute_usage(attr_name, location);
     }
 
     /// Validate arguments for an attribute.
@@ -591,214 +361,10 @@ impl AttributeValidationAnalyzer {
         }
     }
 
-    /// Track attribute usage for conflict detection.
-    pub fn track_attribute_usage(
-        attribute_usage: &mut HashMap<String, Vec<String>>,
-        attr_name: &str,
-        location: &str,
-    ) {
-        attribute_usage
-            .entry(attr_name.to_string())
-            .or_default()
-            .push(location.to_string());
-    }
-
-    /// Validate for conflicting attributes.
-    pub fn validate_attribute_conflicts(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Check for non-repeatable attributes used multiple times
-        for (attr_name, locations) in &self.attribute_usage {
-            if locations.len() > 1
-                && let Some(definition) = self.attribute_registry.get(attr_name)
-                && !definition.repeatable
-            {
-                diagnostics.push(SemanticDiagnostic::error(
-                        SymbolSpan {
-                            start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                            end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                        },
-                        format!(
-                            "Attribute '@{attr_name}' cannot be used multiple times. Found on: {}",
-                            locations.join(", ")
-                        ),
-                        DiagnosticCode::ConflictingAttributes,
-                    ).with_suggestion("Remove duplicate attributes or use a single attribute with multiple values".to_string()));
-            }
-        }
-
-        // Check for mutually exclusive attributes
-        self.check_mutually_exclusive_attributes(diagnostics);
-    }
-
-    /// Check for mutually exclusive attributes.
-    pub fn check_mutually_exclusive_attributes(
-        &self,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Define mutually exclusive attribute pairs
-        let exclusive_pairs = [
-            ("id", "unique"), // A field can't be both @id and @unique
-        ];
-
-        for (attr1, attr2) in exclusive_pairs {
-            let has_attr1 = self.attribute_usage.contains_key(attr1);
-            let has_attr2 = self.attribute_usage.contains_key(attr2);
-
-            if has_attr1 && has_attr2 {
-                // Find if they're on the same field
-                if let (Some(locations1), Some(locations2)) = (
-                    self.attribute_usage.get(attr1),
-                    self.attribute_usage.get(attr2),
-                ) {
-                    for loc1 in locations1 {
-                        for loc2 in locations2 {
-                            if loc1 == loc2 {
-                                diagnostics.push(SemanticDiagnostic::error(
-                                    SymbolSpan {
-                                        start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                        end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
-                                    },
-                                    format!("Conflicting attributes '@{attr1}' and '@{attr2}' on {loc1}"),
-                                    DiagnosticCode::ConflictingAttributes,
-                                ).with_suggestion(format!("Use either '@{attr1}' or '@{attr2}', but not both")));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Get the attribute registry for inspection.
     #[must_use]
     pub fn attribute_registry(&self) -> &HashMap<String, AttributeDefinition> {
         &self.attribute_registry
-    }
-
-    /// Analyze attributes for a model (immutable version for thread safety).
-    fn analyze_model_attributes_immutable(
-        &self,
-        model: &crate::core::parser::ast::ModelDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Analyze model-level attributes
-        for attr in &model.attrs {
-            self.analyze_single_attribute_immutable(
-                &attr
-                    .name
-                    .parts
-                    .first()
-                    .map_or(String::new(), |p| p.text.clone()),
-                attr.args.as_ref(),
-                &attr.span,
-                AttributeContext::Model,
-                &format!("model {}", model.name.text),
-                diagnostics,
-            );
-        }
-
-        // Analyze member attributes
-        for member in &model.members {
-            match member {
-                ModelMember::Field(field) => {
-                    for attr in &field.attrs {
-                        self.analyze_single_attribute_immutable(
-                            &attr
-                                .name
-                                .parts
-                                .first()
-                                .map_or(String::new(), |p| p.text.clone()),
-                            attr.args.as_ref(),
-                            &attr.span,
-                            AttributeContext::Field,
-                            &format!(
-                                "field {}.{}",
-                                model.name.text, field.name.text
-                            ),
-                            diagnostics,
-                        );
-                    }
-                }
-                ModelMember::BlockAttribute(attr) => {
-                    self.analyze_single_attribute_immutable(
-                        &attr
-                            .name
-                            .parts
-                            .first()
-                            .map_or(String::new(), |p| p.text.clone()),
-                        attr.args.as_ref(),
-                        &attr.span,
-                        AttributeContext::Model,
-                        &format!("model {}", model.name.text),
-                        diagnostics,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Analyze attributes for an enum (immutable version for thread safety).
-    fn analyze_enum_attributes_immutable(
-        &self,
-        enum_decl: &crate::core::parser::ast::EnumDecl,
-        diagnostics: &mut Vec<SemanticDiagnostic>,
-    ) {
-        // Analyze enum-level attributes
-        for attr in &enum_decl.attrs {
-            self.analyze_single_attribute_immutable(
-                &attr
-                    .name
-                    .parts
-                    .first()
-                    .map_or(String::new(), |p| p.text.clone()),
-                attr.args.as_ref(),
-                &attr.span,
-                AttributeContext::Enum,
-                &format!("enum {}", enum_decl.name.text),
-                diagnostics,
-            );
-        }
-
-        // Analyze enum members
-        for member in &enum_decl.members {
-            match member {
-                EnumMember::Value(value) => {
-                    for attr in &value.attrs {
-                        self.analyze_single_attribute_immutable(
-                            &attr
-                                .name
-                                .parts
-                                .first()
-                                .map_or(String::new(), |p| p.text.clone()),
-                            attr.args.as_ref(),
-                            &attr.span,
-                            AttributeContext::EnumValue,
-                            &format!(
-                                "enum value {}.{}",
-                                enum_decl.name.text, value.name.text
-                            ),
-                            diagnostics,
-                        );
-                    }
-                }
-                EnumMember::BlockAttribute(attr) => {
-                    self.analyze_single_attribute_immutable(
-                        &attr
-                            .name
-                            .parts
-                            .first()
-                            .map_or(String::new(), |p| p.text.clone()),
-                        attr.args.as_ref(),
-                        &attr.span,
-                        AttributeContext::Enum,
-                        &format!("enum {}", enum_decl.name.text),
-                        diagnostics,
-                    );
-                }
-            }
-        }
     }
 
     /// Analyze a single attribute (immutable version for thread safety).
@@ -858,6 +424,242 @@ impl AttributeValidationAnalyzer {
             diagnostics,
         );
     }
+
+    /// Analyze attributes for a model with conflict detection.
+    fn analyze_model_attributes_with_conflict_detection(
+        &self,
+        model: &crate::core::parser::ast::ModelDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+        attribute_usage: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    ) {
+        // Analyze model-level attributes
+        for attr in &model.attrs {
+            self.analyze_single_attribute_with_conflict_detection(
+                &attr
+                    .name
+                    .parts
+                    .first()
+                    .map_or(String::new(), |p| p.text.clone()),
+                attr.args.as_ref(),
+                &attr.span,
+                AttributeContext::Model,
+                &format!("model {}", model.name.text),
+                diagnostics,
+                Arc::clone(&attribute_usage),
+            );
+        }
+
+        // Analyze member attributes
+        for member in &model.members {
+            match member {
+                ModelMember::Field(field) => {
+                    for attr in &field.attrs {
+                        let field_location = format!(
+                            "field {}.{}",
+                            model.name.text, field.name.text
+                        );
+                        self.analyze_single_attribute_with_conflict_detection(
+                            &attr
+                                .name
+                                .parts
+                                .first()
+                                .map_or(String::new(), |p| p.text.clone()),
+                            attr.args.as_ref(),
+                            &attr.span,
+                            AttributeContext::Field,
+                            &field_location,
+                            diagnostics,
+                            Arc::clone(&attribute_usage),
+                        );
+                    }
+                }
+                ModelMember::BlockAttribute(attr) => {
+                    self.analyze_single_attribute_with_conflict_detection(
+                        &attr
+                            .name
+                            .parts
+                            .first()
+                            .map_or(String::new(), |p| p.text.clone()),
+                        attr.args.as_ref(),
+                        &attr.span,
+                        AttributeContext::Model,
+                        &format!("model {}", model.name.text),
+                        diagnostics,
+                        Arc::clone(&attribute_usage),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Analyze attributes for an enum with conflict detection.
+    fn analyze_enum_attributes_with_conflict_detection(
+        &self,
+        enum_decl: &crate::core::parser::ast::EnumDecl,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+        attribute_usage: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    ) {
+        // Analyze enum-level attributes
+        for attr in &enum_decl.attrs {
+            self.analyze_single_attribute_with_conflict_detection(
+                &attr
+                    .name
+                    .parts
+                    .first()
+                    .map_or(String::new(), |p| p.text.clone()),
+                attr.args.as_ref(),
+                &attr.span,
+                AttributeContext::Enum,
+                &format!("enum {}", enum_decl.name.text),
+                diagnostics,
+                Arc::clone(&attribute_usage),
+            );
+        }
+
+        // Analyze enum members
+        for member in &enum_decl.members {
+            match member {
+                EnumMember::Value(value) => {
+                    for attr in &value.attrs {
+                        self.analyze_single_attribute_with_conflict_detection(
+                            &attr
+                                .name
+                                .parts
+                                .first()
+                                .map_or(String::new(), |p| p.text.clone()),
+                            attr.args.as_ref(),
+                            &attr.span,
+                            AttributeContext::EnumValue,
+                            &format!(
+                                "enum value {}.{}",
+                                enum_decl.name.text, value.name.text
+                            ),
+                            diagnostics,
+                            Arc::clone(&attribute_usage),
+                        );
+                    }
+                }
+                EnumMember::BlockAttribute(attr) => {
+                    self.analyze_single_attribute_with_conflict_detection(
+                        &attr
+                            .name
+                            .parts
+                            .first()
+                            .map_or(String::new(), |p| p.text.clone()),
+                        attr.args.as_ref(),
+                        &attr.span,
+                        AttributeContext::Enum,
+                        &format!("enum {}", enum_decl.name.text),
+                        diagnostics,
+                        Arc::clone(&attribute_usage),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Analyze a single attribute with conflict detection.
+    fn analyze_single_attribute_with_conflict_detection(
+        &self,
+        attr_name: &str,
+        attr_args: Option<&crate::core::parser::ast::ArgList>,
+        attr_span: &SymbolSpan,
+        context: AttributeContext,
+        location: &str,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+        attribute_usage: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    ) {
+        // First do the standard validation
+        self.analyze_single_attribute_immutable(
+            attr_name,
+            attr_args,
+            attr_span,
+            context,
+            location,
+            diagnostics,
+        );
+
+        // Track attribute usage for conflict detection
+        {
+            let mut usage = attribute_usage.lock().unwrap();
+            usage
+                .entry(attr_name.to_string())
+                .or_default()
+                .push(location.to_string());
+        }
+    }
+
+    /// Validate attribute conflicts from usage tracking.
+    fn validate_attribute_conflicts_from_usage(
+        &self,
+        attribute_usage: &HashMap<String, Vec<String>>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Check for non-repeatable attributes used multiple times
+        for (attr_name, locations) in attribute_usage {
+            if locations.len() > 1
+                && let Some(definition) = self.attribute_registry.get(attr_name)
+                && !definition.repeatable
+            {
+                diagnostics.push(SemanticDiagnostic::error(
+                            SymbolSpan {
+                                start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
+                                end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
+                            },
+                            format!(
+                                "Attribute '@{attr_name}' cannot be used multiple times. Found on: {}",
+                                locations.join(", ")
+                            ),
+                            DiagnosticCode::ConflictingAttributes,
+                        ).with_suggestion("Remove duplicate attributes or use a single attribute with multiple values".to_string()));
+            }
+        }
+
+        // Check for mutually exclusive attributes
+        self.check_mutually_exclusive_attributes_from_usage(
+            attribute_usage,
+            diagnostics,
+        );
+    }
+
+    /// Check for mutually exclusive attributes from usage tracking.
+    fn check_mutually_exclusive_attributes_from_usage(
+        &self,
+        attribute_usage: &HashMap<String, Vec<String>>,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        // Define mutually exclusive attribute pairs
+        let exclusive_pairs = [
+            ("id", "unique"), // A field can't be both @id and @unique
+        ];
+
+        for (attr1, attr2) in exclusive_pairs {
+            let has_attr1 = attribute_usage.contains_key(attr1);
+            let has_attr2 = attribute_usage.contains_key(attr2);
+
+            if has_attr1 && has_attr2 {
+                // Find if they're on the same field
+                if let (Some(locations1), Some(locations2)) =
+                    (attribute_usage.get(attr1), attribute_usage.get(attr2))
+                {
+                    for loc1 in locations1 {
+                        for loc2 in locations2 {
+                            if loc1 == loc2 {
+                                diagnostics.push(SemanticDiagnostic::error(
+                                    SymbolSpan {
+                                        start: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
+                                        end: crate::core::scanner::tokens::SymbolLocation { line: 0, column: 0 },
+                                    },
+                                    format!("Conflicting attributes '@{attr1}' and '@{attr2}' on {loc1}"),
+                                    DiagnosticCode::ConflictingAttributes,
+                                ).with_suggestion(format!("Use either '@{attr1}' or '@{attr2}', but not both")));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Default for AttributeValidationAnalyzer {
@@ -878,19 +680,25 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
     ) -> PhaseResult {
         let mut diagnostics = Vec::new();
 
+        // Thread-safe usage tracking for conflict detection
+        let attribute_usage =
+            Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
+
         // Analyze all declarations
         for declaration in &schema.declarations {
             match declaration {
                 crate::core::parser::ast::Declaration::Model(model) => {
-                    self.analyze_model_attributes_immutable(
+                    self.analyze_model_attributes_with_conflict_detection(
                         model,
                         &mut diagnostics,
+                        Arc::clone(&attribute_usage),
                     );
                 }
                 crate::core::parser::ast::Declaration::Enum(enum_decl) => {
-                    self.analyze_enum_attributes_immutable(
+                    self.analyze_enum_attributes_with_conflict_detection(
                         enum_decl,
                         &mut diagnostics,
+                        Arc::clone(&attribute_usage),
                     );
                 }
                 crate::core::parser::ast::Declaration::Datasource(_)
@@ -901,6 +709,10 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
             }
         }
 
+        // Check for conflicts after analyzing all attributes
+        let usage = attribute_usage.lock().unwrap();
+        self.validate_attribute_conflicts_from_usage(&usage, &mut diagnostics);
+
         PhaseResult::new(diagnostics)
     }
 
@@ -910,8 +722,7 @@ impl PhaseAnalyzer for AttributeValidationAnalyzer {
     }
 
     fn supports_parallel_execution(&self) -> bool {
-        // Attribute validation can run in parallel since we removed mutable state tracking
-        // TODO: Re-enable conflict detection with thread-safe patterns
+        // Attribute validation now supports parallelism with thread-safe conflict detection
         true
     }
 }
@@ -944,6 +755,227 @@ mod tests {
         assert_eq!(analyzer.dependencies(), &["symbol-collection"]);
         assert!(analyzer.supports_parallel_execution());
         assert!(!analyzer.attribute_registry().is_empty());
+    }
+
+    #[test]
+    fn test_conflict_detection_id_and_unique() {
+        // Test that the new thread-safe conflict detection works
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("id"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("Int")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![
+                    FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("id")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    },
+                    FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("unique")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    },
+                ],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new_test(&options);
+
+        let result = analyzer.analyze(&schema, &context);
+
+        // Should detect the conflict between @id and @unique
+        let has_conflict_error = result.diagnostics.iter().any(|d| {
+            d.message.contains("Conflicting attributes")
+                && d.message.contains("id")
+                && d.message.contains("unique")
+        });
+        assert!(has_conflict_error, "Should detect @id and @unique conflict");
+    }
+
+    #[test]
+    fn test_non_repeatable_attribute_usage() {
+        // Test detection of multiple uses of non-repeatable attributes
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![
+                ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("field1"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("Int")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("id")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    }],
+                    span: create_test_span(),
+                }),
+                ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: create_test_ident("field2"),
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("Int")],
+                            span: create_test_span(),
+                        },
+                        span: create_test_span(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![create_test_ident("id")],
+                            span: create_test_span(),
+                        },
+                        args: None,
+                        span: create_test_span(),
+                    }],
+                    span: create_test_span(),
+                }),
+            ],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        };
+
+        let analyzer = AttributeValidationAnalyzer::new();
+        let options = AnalyzerOptions::default();
+        let context = AnalysisContext::new_test(&options);
+
+        let result = analyzer.analyze(&schema, &context);
+
+        // Should detect multiple uses of non-repeatable @id attribute
+        let has_duplicate_error = result.diagnostics.iter().any(|d| {
+            d.message.contains("cannot be used multiple times")
+                && d.message.contains("id")
+        });
+        assert!(
+            has_duplicate_error,
+            "Should detect multiple @id attribute usage"
+        );
+    }
+
+    #[test]
+    fn test_thread_safe_parallel_execution() {
+        // Test that the analyzer works correctly when called from multiple threads
+        use std::sync::Arc;
+        use std::thread;
+
+        let model = ModelDecl {
+            docs: None,
+            name: create_test_ident("User"),
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: create_test_ident("id"),
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("Int")],
+                        span: create_test_span(),
+                    },
+                    span: create_test_span(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![create_test_ident("id")],
+                        span: create_test_span(),
+                    },
+                    args: None,
+                    span: create_test_span(),
+                }],
+                span: create_test_span(),
+            })],
+            attrs: Vec::new(),
+            span: create_test_span(),
+        };
+
+        let schema = Arc::new(Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: create_test_span(),
+        });
+
+        let analyzer = Arc::new(AttributeValidationAnalyzer::new());
+        let options = AnalyzerOptions::default();
+        let context = Arc::new(AnalysisContext::new_test(&options));
+
+        let mut handles = Vec::new();
+
+        // Spawn multiple threads to test thread safety
+        for _ in 0..4 {
+            let schema_clone = Arc::clone(&schema);
+            let analyzer_clone = Arc::clone(&analyzer);
+            let context_clone = Arc::clone(&context);
+
+            let handle = thread::spawn(move || {
+                analyzer_clone.analyze(&schema_clone, &context_clone)
+            });
+            handles.push(handle);
+        }
+
+        // Collect all results
+        let mut all_passed = true;
+        for handle in handles {
+            match handle.join() {
+                Ok(result) => {
+                    // Each thread should produce the same analysis result
+                    // (no diagnostics for a simple valid schema)
+                    if !result.diagnostics.is_empty() {
+                        all_passed = false;
+                    }
+                }
+                Err(_) => all_passed = false,
+            }
+        }
+
+        assert!(all_passed, "Thread-safe execution should work correctly");
     }
 
     #[test]
@@ -1500,8 +1532,8 @@ mod tests {
             assert!(has_attr, "Attribute '{attr_name}' should be registered");
         }
 
-        // Verify usage tracking is empty initially
-        assert!(analyzer.attribute_usage.is_empty());
+        // Verify that the analyzer initializes correctly
+        assert!(!analyzer.attribute_registry.is_empty());
     }
 
     #[test]

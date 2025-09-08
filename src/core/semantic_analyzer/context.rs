@@ -565,7 +565,8 @@ impl AnalysisResult {
 
 #[cfg(test)]
 impl AnalysisResult {
-    /// Test helper: return relationship edges as (from_model, from_field, to_model)
+    /// Test helper: return relationship edges as (`from_model`, `from_field`, `to_model`)
+    #[must_use]
     pub fn test_relationship_edges(&self) -> Vec<(String, String, String)> {
         self.relationship_graph
             .relationships

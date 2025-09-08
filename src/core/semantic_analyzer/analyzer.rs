@@ -428,14 +428,86 @@ impl SemanticAnalyzer {
 
         if parallel_analyzers.len() > threshold && parallel_analyzers.len() > 1
         {
-            // Execute parallel analyzers - for now implemented sequentially
-            // TODO: Implement true parallelism using scoped threads when data ownership is resolved
-            for &analyzer_index in &parallel_analyzers {
-                let analyzer = &self.phase_analyzers[analyzer_index];
-                let phase_name = analyzer.phase_name().to_string();
-                let started = Instant::now();
-                let phase_result = analyzer.analyze(schema, context);
-                let duration = started.elapsed();
+            // Execute parallel analyzers using scoped threads for true parallelism
+            use std::sync::Mutex;
+            use std::thread;
+
+            let results = Arc::new(Mutex::new(Vec::new()));
+
+            // Convert to immutable reference for sharing across threads
+            let context_ref: &AnalysisContext = context;
+
+            thread::scope(|s| {
+                let mut handles = Vec::new();
+
+                for &analyzer_index in &parallel_analyzers {
+                    let analyzer = &self.phase_analyzers[analyzer_index];
+                    let results_clone = Arc::clone(&results);
+
+                    let handle = s.spawn(move || {
+                        let phase_name = analyzer.phase_name().to_string();
+                        let started = Instant::now();
+                        // Use immutable reference to context - safe to share across threads
+                        let phase_result =
+                            analyzer.analyze(schema, context_ref);
+                        let duration = started.elapsed();
+
+                        // Collect result for main thread processing
+                        // (timing will be recorded by main thread)
+                        match results_clone.lock() {
+                            Ok(mut results_guard) => {
+                                results_guard.push((
+                                    phase_name,
+                                    phase_result,
+                                    duration,
+                                ));
+                            }
+                            Err(poison_error) => {
+                                panic!("Failed to acquire lock on results in thread: {poison_error:?}");
+                            }
+                        }
+                    });
+
+                    handles.push(handle);
+                }
+
+                // Wait for all threads to complete and handle panics
+                for handle in handles {
+                    if let Err(panic_payload) = handle.join() {
+                        let panic_message = if let Some(s) =
+                            panic_payload.downcast_ref::<&str>()
+                        {
+                            (*s).to_string()
+                        } else if let Some(s) =
+                            panic_payload.downcast_ref::<String>()
+                        {
+                            s.clone()
+                        } else {
+                            "Thread panicked with unknown payload".to_string()
+                        };
+
+                        return Err(AnalysisError::ThreadPanic {
+                            phase: "parallel execution".to_string(),
+                            message: panic_message,
+                        });
+                    }
+                }
+                Ok(())
+            })?;
+
+            // Process results from parallel execution
+            let results = Arc::try_unwrap(results)
+                .map_err(|_| AnalysisError::ThreadPanic {
+                    phase: "parallel execution cleanup".to_string(), 
+                    message: "Failed to unwrap results Arc - multiple references remain".to_string(),
+                })?
+                .into_inner()
+                .map_err(|e| AnalysisError::ThreadPanic {
+                    phase: "parallel execution cleanup".to_string(),
+                    message: format!("Failed to acquire results mutex: {e:?}"),
+                })?;
+            for (phase_name, phase_result, duration) in results {
+                // Record timing information
                 context.record_phase_timing(phase_name.clone(), duration);
 
                 if duration > options.phase_timeout {
@@ -444,7 +516,21 @@ impl SemanticAnalyzer {
                         elapsed: duration,
                     });
                 }
+
+                let has_fatal = phase_result.has_fatal_errors();
                 self.diagnostic_collector.extend(phase_result.diagnostics);
+
+                // Stop on fatal errors if configured
+                if has_fatal
+                    && matches!(options.validation_mode, ValidationMode::Strict)
+                {
+                    return Ok(());
+                }
+
+                // Check diagnostic limit
+                if self.diagnostic_collector.len() >= options.max_diagnostics {
+                    return Ok(());
+                }
             }
 
             // Execute remaining non-parallel analyzers sequentially
@@ -784,6 +870,8 @@ pub enum AnalysisError {
 
     /// Invalid dependency graph structure
     InvalidDependencyGraph { message: String },
+    /// Thread panic during parallel execution
+    ThreadPanic { phase: String, message: String },
 }
 
 impl std::fmt::Display for AnalysisError {
@@ -813,6 +901,9 @@ impl std::fmt::Display for AnalysisError {
             }
             AnalysisError::InvalidDependencyGraph { message } => {
                 write!(f, "Invalid dependency graph: {message}")
+            }
+            AnalysisError::ThreadPanic { phase, message } => {
+                write!(f, "Thread panic in phase '{phase}': {message}")
             }
         }
     }
@@ -1113,125 +1204,80 @@ mod tests {
     fn test_pipeline_shared_state_end_to_end() {
         use crate::core::parser::ast::*;
         use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
-        use crate::core::semantic_analyzer::AnalyzerOptions;
 
+        #[rustfmt::skip]
         fn sp() -> SymbolSpan {
             SymbolSpan {
                 start: SymbolLocation { line: 1, column: 1 },
-                end: SymbolLocation {
-                    line: 1,
-                    column: 10,
-                },
+                end: SymbolLocation { line: 1, column: 10 },
             }
         }
 
         // datasource
+        #[rustfmt::skip]
         let datasource = DatasourceDecl {
-            name: Ident {
-                text: "db".into(),
-                span: sp(),
-            },
+            name: Ident { text: "db".into(), span: sp() },
             assignments: vec![Assignment {
-                key: Ident {
-                    text: "provider".into(),
-                    span: sp(),
-                },
+                key: Ident { text: "provider".into(), span: sp() },
                 value: Expr::StringLit(StringLit {
-                    value: "postgresql".into(),
-                    span: sp(),
-                }),
-                docs: None,
-                span: sp(),
-            }],
-            docs: None,
-            span: sp(),
+                    value: "postgresql".into(), span: sp(),
+                }), docs: None, span: sp(),
+            }], docs: None, span: sp(),
         };
 
         // Model Post
+        #[rustfmt::skip]
         let post = ModelDecl {
             docs: None,
-            name: Ident {
-                text: "Post".into(),
-                span: sp(),
-            },
+            name: Ident { text: "Post".into(), span: sp() },
             members: vec![ModelMember::Field(FieldDecl {
                 docs: None,
-                name: Ident {
-                    text: "title".into(),
-                    span: sp(),
-                },
+                name: Ident { text: "title".into(), span: sp() },
                 r#type: TypeRef::Named(NamedType {
                     name: QualifiedIdent {
-                        parts: vec![Ident {
-                            text: "String".into(),
-                            span: sp(),
-                        }],
+                        parts: vec![Ident { text: "String".into(), span: sp() }],
                         span: sp(),
-                    },
-                    span: sp(),
+                    }, span: sp(),
                 }),
-                optional: false,
-                modifiers: vec![],
-                attrs: vec![],
-                span: sp(),
+                optional: false, modifiers: vec![], attrs: vec![], span: sp(),
             })],
-            attrs: vec![],
-            span: sp(),
+            attrs: vec![], span: sp(),
         };
 
         // Model User with relation to Post
+        #[rustfmt::skip]
         let user = ModelDecl {
             docs: None,
-            name: Ident {
-                text: "User".into(),
-                span: sp(),
-            },
+            name: Ident { text: "User".into(), span: sp() },
             members: vec![ModelMember::Field(FieldDecl {
                 docs: None,
-                name: Ident {
-                    text: "posts".into(),
-                    span: sp(),
-                },
+                name: Ident { text: "posts".into(), span: sp() },
                 r#type: TypeRef::List(ListType {
                     inner: Box::new(TypeRef::Named(NamedType {
                         name: QualifiedIdent {
-                            parts: vec![Ident {
-                                text: "Post".into(),
-                                span: sp(),
-                            }],
+                            parts: vec![Ident { text: "Post".into(), span: sp() }],
                             span: sp(),
-                        },
-                        span: sp(),
-                    })),
-                    span: sp(),
+                        }, span: sp(),
+                    })), span: sp(),
                 }),
-                optional: false,
-                modifiers: vec![],
+                optional: false, modifiers: vec![],
                 attrs: vec![FieldAttribute {
                     docs: None,
                     name: QualifiedIdent {
-                        parts: vec![Ident {
-                            text: "relation".into(),
-                            span: sp(),
-                        }],
-                        span: sp(),
-                    },
-                    args: None,
-                    span: sp(),
-                }],
-                span: sp(),
-            })],
-            attrs: vec![],
-            span: sp(),
+                        parts: vec![Ident { text: "relation".into(), span: sp(),
+                        }], span: sp(),
+                    }, args: None, span: sp(),
+                }], span: sp(),
+            })], attrs: vec![], span: sp(),
         };
 
+        #[rustfmt::skip]
         let schema = Schema {
             declarations: vec![
                 Declaration::Datasource(datasource),
                 Declaration::Model(user),
                 Declaration::Model(post),
-            ],
-            span: sp(),
+            ], span: sp(),
         };
 
         let options = AnalyzerOptions::default();
@@ -1248,10 +1294,9 @@ mod tests {
         assert!(model_names.contains(&"Post".to_string()));
 
         // No UnknownType errors expected
+        #[rustfmt::skip]
         assert!(
-            result
-                .diagnostics
-                .iter()
+            result.diagnostics.iter()
                 .all(|d| d.diagnostic_code != DiagnosticCode::UnknownType)
         );
 
@@ -1259,20 +1304,12 @@ mod tests {
         let summary = result.summary();
         assert!(summary.total_symbols >= 2);
         // Expect symbol-collection phase timing to be present
-        assert!(
-            result
-                .analysis_metadata
-                .get_phase_timing("symbol-collection")
-                .is_some()
-        );
+        #[rustfmt::skip]
+        assert!(result.analysis_metadata.get_phase_timing("symbol-collection").is_some());
 
         // Expect attribute-validation phase timing to be present (ran after symbol collection)
-        assert!(
-            result
-                .analysis_metadata
-                .get_phase_timing("attribute-validation")
-                .is_some()
-        );
+        #[rustfmt::skip]
+        assert!(result.analysis_metadata.get_phase_timing("attribute-validation").is_some());
 
         // Relationship graph should include the User->posts relationship id
         let graph = &result.relationship_graph;
@@ -1288,71 +1325,46 @@ mod tests {
         use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
         use crate::core::semantic_analyzer::{AnalyzerOptions, DiagnosticCode};
 
+        #[rustfmt::skip]
         fn sp() -> SymbolSpan {
             SymbolSpan {
                 start: SymbolLocation { line: 1, column: 1 },
-                end: SymbolLocation {
-                    line: 1,
-                    column: 20,
-                },
+                end: SymbolLocation { line: 1, column: 20 },
             }
         }
 
+        #[rustfmt::skip]
         let field = FieldDecl {
             docs: None,
-            name: Ident {
-                text: "email".into(),
-                span: sp(),
-            },
+            name: Ident { text: "email".into(), span: sp() },
             r#type: TypeRef::Named(NamedType {
                 name: QualifiedIdent {
-                    parts: vec![Ident {
-                        text: "String".into(),
-                        span: sp(),
-                    }],
+                    parts: vec![Ident { text: "String".into(), span: sp() }],
                     span: sp(),
-                },
-                span: sp(),
+                }, span: sp(),
             }),
-            optional: false,
-            modifiers: vec![],
+            optional: false, modifiers: vec![],
             attrs: vec![FieldAttribute {
                 docs: None,
                 name: QualifiedIdent {
-                    parts: vec![Ident {
-                        text: "unique".into(),
-                        span: sp(),
-                    }],
+                    parts: vec![Ident { text: "unique".into(), span: sp() }],
                     span: sp(),
                 },
                 args: Some(ArgList {
                     items: vec![Arg::Named(NamedArg {
-                        name: Ident {
-                            text: "invalid_arg".into(),
-                            span: sp(),
-                        },
-                        value: Expr::StringLit(StringLit {
-                            value: "value".into(),
-                            span: sp(),
-                        }),
+                        name: Ident { text: "invalid_arg".into(), span: sp() },
+                        value: Expr::StringLit(StringLit { value: "value".into(), span: sp() }),
                         span: sp(),
-                    })],
-                    span: sp(),
-                }),
-                span: sp(),
-            }],
-            span: sp(),
+                    })], span: sp(),
+                }), span: sp(),
+            }], span: sp(),
         };
 
+        #[rustfmt::skip]
         let model = ModelDecl {
-            docs: None,
-            name: Ident {
-                text: "User".into(),
-                span: sp(),
-            },
+            docs: None, attrs: vec![], span: sp(),
+            name: Ident { text: "User".into(), span: sp() },
             members: vec![ModelMember::Field(field)],
-            attrs: vec![],
-            span: sp(),
         };
 
         let datasource = DatasourceDecl {
@@ -1376,12 +1388,12 @@ mod tests {
             span: sp(),
         };
 
+        #[rustfmt::skip]
         let schema = Schema {
             declarations: vec![
                 Declaration::Datasource(datasource),
                 Declaration::Model(model),
-            ],
-            span: sp(),
+            ], span: sp(),
         };
 
         let options = AnalyzerOptions::default();
@@ -1403,5 +1415,422 @@ mod tests {
         );
         assert!(invalids[0].span.start.line > 0);
         assert!(invalids[0].span.end.line > 0);
+    }
+
+    #[test]
+    fn test_true_parallel_execution() {
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use std::time::Duration;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // Create a schema that will trigger multiple analyzers
+        let model = ModelDecl {
+            docs: None,
+            name: Ident {
+                text: "User".into(),
+                span: sp(),
+            },
+            members: vec![ModelMember::Field(FieldDecl {
+                docs: None,
+                name: Ident {
+                    text: "id".into(),
+                    span: sp(),
+                },
+                r#type: TypeRef::Named(NamedType {
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "Int".into(),
+                            span: sp(),
+                        }],
+                        span: sp(),
+                    },
+                    span: sp(),
+                }),
+                optional: false,
+                modifiers: Vec::new(),
+                attrs: vec![FieldAttribute {
+                    docs: None,
+                    name: QualifiedIdent {
+                        parts: vec![Ident {
+                            text: "id".into(),
+                            span: sp(),
+                        }],
+                        span: sp(),
+                    },
+                    args: None,
+                    span: sp(),
+                }],
+                span: sp(),
+            })],
+            attrs: Vec::new(),
+            span: sp(),
+        };
+
+        let schema = Schema {
+            declarations: vec![Declaration::Model(model)],
+            span: sp(),
+        };
+
+        // Test with concurrent mode to trigger parallel execution
+        let mut analyzer = SemanticAnalyzer::new();
+        let options = AnalyzerOptions {
+            concurrency: ConcurrencyMode::Concurrent {
+                max_threads: 4,
+                threshold: 1, // Low threshold to ensure parallel execution kicks in
+            },
+            ..AnalyzerOptions::default()
+        };
+
+        let start_time = std::time::Instant::now();
+        let result = analyzer.analyze(&schema, &options);
+        let duration = start_time.elapsed();
+
+        // Analysis should succeed
+        assert!(result.is_ok(), "Parallel analysis should succeed");
+        let result = result.unwrap();
+
+        // Analysis should have completed successfully
+        assert!(result.analyzer_count > 0, "Should have run analyzers");
+
+        // Should complete in reasonable time (parallel execution should be fast)
+        assert!(
+            duration < Duration::from_secs(5),
+            "Analysis should complete quickly: {duration:?}"
+        );
+    }
+
+    #[test]
+    fn test_parallel_vs_sequential_consistency() {
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // Create a schema with multiple models and relationships
+        let schema = Schema {
+            declarations: vec![Declaration::Model(ModelDecl {
+                docs: None,
+                name: Ident {
+                    text: "User".into(),
+                    span: sp(),
+                },
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: Ident {
+                        text: "id".into(),
+                        span: sp(),
+                    },
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "Int".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "id".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        args: None,
+                        span: sp(),
+                    }],
+                    span: sp(),
+                })],
+                attrs: Vec::new(),
+                span: sp(),
+            })],
+            span: sp(),
+        };
+
+        // Run with sequential mode
+        let mut analyzer_sequential = SemanticAnalyzer::new();
+        let sequential_options = AnalyzerOptions {
+            concurrency: ConcurrencyMode::Sequential,
+            ..AnalyzerOptions::default()
+        };
+        let sequential_result = analyzer_sequential
+            .analyze(&schema, &sequential_options)
+            .expect("Sequential analysis should succeed");
+
+        // Run with concurrent mode
+        let mut analyzer_parallel = SemanticAnalyzer::new();
+        let parallel_options = AnalyzerOptions {
+            concurrency: ConcurrencyMode::Concurrent {
+                max_threads: 4,
+                threshold: 1,
+            },
+            ..AnalyzerOptions::default()
+        };
+        let parallel_result = analyzer_parallel
+            .analyze(&schema, &parallel_options)
+            .expect("Parallel analysis should succeed");
+
+        // Results should be consistent
+        assert_eq!(
+            sequential_result.diagnostics.len(),
+            parallel_result.diagnostics.len(),
+            "Sequential and parallel should produce same number of diagnostics"
+        );
+
+        // Both should have the same analyzers
+        assert_eq!(
+            sequential_result.analyzer_count, parallel_result.analyzer_count,
+            "Should have same analyzer count"
+        );
+
+        // Symbol table contents should be equivalent
+        assert_eq!(
+            sequential_result.symbol_table.models().count(),
+            parallel_result.symbol_table.models().count(),
+            "Should have same number of models in symbol table"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_mode_thread_safety() {
+        // This test specifically tests the thread safety of the new parallel implementation
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use std::sync::Arc;
+        use std::thread;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        let schema = Arc::new(Schema {
+            declarations: vec![Declaration::Model(ModelDecl {
+                docs: None,
+                name: Ident {
+                    text: "TestModel".into(),
+                    span: sp(),
+                },
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: Ident {
+                        text: "id".into(),
+                        span: sp(),
+                    },
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "Int".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "id".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        args: None,
+                        span: sp(),
+                    }],
+                    span: sp(),
+                })],
+                attrs: Vec::new(),
+                span: sp(),
+            })],
+            span: sp(),
+        });
+
+        let options = Arc::new(AnalyzerOptions {
+            concurrency: ConcurrencyMode::Concurrent {
+                max_threads: 2,
+                threshold: 1,
+            },
+            ..AnalyzerOptions::default()
+        });
+
+        let mut handles = Vec::new();
+
+        // Run multiple concurrent analyses to test thread safety
+        for _ in 0..3 {
+            let schema_clone = Arc::clone(&schema);
+            let options_clone = Arc::clone(&options);
+
+            let handle = thread::spawn(move || {
+                let mut analyzer = SemanticAnalyzer::new();
+                analyzer.analyze(&schema_clone, &options_clone)
+            });
+
+            handles.push(handle);
+        }
+
+        // Collect all results - they should all succeed
+        let mut all_succeeded = true;
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(_result)) => {
+                    // Analysis succeeded
+                }
+                Ok(Err(_)) | Err(_) => {
+                    all_succeeded = false;
+                }
+            }
+        }
+
+        assert!(all_succeeded, "All concurrent analyses should succeed");
+    }
+
+    #[test]
+    fn test_parallel_execution_performance_characteristics() {
+        // This test verifies that parallel execution actually provides some benefit
+        // Note: This is more of a smoke test since performance can vary
+        use crate::core::parser::ast::*;
+        use crate::core::scanner::tokens::{SymbolLocation, SymbolSpan};
+        use std::time::Instant;
+
+        fn sp() -> SymbolSpan {
+            SymbolSpan {
+                start: SymbolLocation { line: 1, column: 1 },
+                end: SymbolLocation {
+                    line: 1,
+                    column: 10,
+                },
+            }
+        }
+
+        // Create a more complex schema to potentially see parallel benefits
+        let mut declarations = Vec::new();
+
+        for i in 0..10 {
+            declarations.push(Declaration::Model(ModelDecl {
+                docs: None,
+                name: Ident {
+                    text: format!("Model{i}"),
+                    span: sp(),
+                },
+                members: vec![ModelMember::Field(FieldDecl {
+                    docs: None,
+                    name: Ident {
+                        text: "id".into(),
+                        span: sp(),
+                    },
+                    r#type: TypeRef::Named(NamedType {
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "Int".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        span: sp(),
+                    }),
+                    optional: false,
+                    modifiers: Vec::new(),
+                    attrs: vec![FieldAttribute {
+                        docs: None,
+                        name: QualifiedIdent {
+                            parts: vec![Ident {
+                                text: "id".into(),
+                                span: sp(),
+                            }],
+                            span: sp(),
+                        },
+                        args: None,
+                        span: sp(),
+                    }],
+                    span: sp(),
+                })],
+                attrs: Vec::new(),
+                span: sp(),
+            }));
+        }
+
+        let schema = Schema {
+            declarations,
+            span: sp(),
+        };
+
+        // Test sequential execution
+        let start = Instant::now();
+        let mut analyzer_seq = SemanticAnalyzer::new();
+        let seq_result = analyzer_seq
+            .analyze(
+                &schema,
+                &AnalyzerOptions {
+                    concurrency: ConcurrencyMode::Sequential,
+                    ..AnalyzerOptions::default()
+                },
+            )
+            .expect("Sequential should work");
+        let seq_duration = start.elapsed();
+
+        // Test parallel execution
+        let start = Instant::now();
+        let mut analyzer_par = SemanticAnalyzer::new();
+        let par_result = analyzer_par
+            .analyze(
+                &schema,
+                &AnalyzerOptions {
+                    concurrency: ConcurrencyMode::Concurrent {
+                        max_threads: 4,
+                        threshold: 1,
+                    },
+                    ..AnalyzerOptions::default()
+                },
+            )
+            .expect("Parallel should work");
+        let par_duration = start.elapsed();
+
+        // Both should produce same results
+        assert_eq!(seq_result.diagnostics.len(), par_result.diagnostics.len());
+        assert_eq!(seq_result.analyzer_count, par_result.analyzer_count);
+
+        // Both should complete in reasonable time (this is a smoke test)
+        assert!(
+            seq_duration.as_millis() < 1000,
+            "Sequential should be reasonably fast"
+        );
+        assert!(
+            par_duration.as_millis() < 1000,
+            "Parallel should be reasonably fast"
+        );
+
+        println!("Sequential: {seq_duration:?}, Parallel: {par_duration:?}");
     }
 }

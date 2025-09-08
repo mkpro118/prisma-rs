@@ -230,9 +230,14 @@ pub enum DiagnosticCode {
     // Schema Structure Issues
     InvalidSchemaStructure,
     EmptyModel,
+    ModelTooSmall,
+    ModelTooLarge,
     UnusedDeclaration,
     MissingField,
     MissingDatasource,
+
+    // Security and Best Practice Issues
+    SecuritySuggestion,
 
     // Naming and Convention Issues
     InvalidIdentifier,
@@ -281,9 +286,12 @@ impl DiagnosticCode {
             DiagnosticCode::QueryOptimizationHint => "W103",
             DiagnosticCode::InvalidSchemaStructure => "E501",
             DiagnosticCode::EmptyModel => "W201",
-            DiagnosticCode::UnusedDeclaration => "W202",
+            DiagnosticCode::ModelTooSmall => "W202",
+            DiagnosticCode::ModelTooLarge => "W203",
+            DiagnosticCode::UnusedDeclaration => "W204",
             DiagnosticCode::MissingField => "E504",
             DiagnosticCode::MissingDatasource => "W505",
+            DiagnosticCode::SecuritySuggestion => "I001",
             DiagnosticCode::InvalidIdentifier => "E601",
             DiagnosticCode::ReservedKeyword => "E602",
             DiagnosticCode::NamingConvention => "W603",
@@ -338,7 +346,8 @@ impl DiagnosticCode {
             DiagnosticCode::MissingPrimaryKey
             | DiagnosticCode::InvalidIndexDefinition
             | DiagnosticCode::DatabaseProviderMismatch
-            | DiagnosticCode::DeprecatedFeature => {
+            | DiagnosticCode::DeprecatedFeature
+            | DiagnosticCode::SecuritySuggestion => {
                 DiagnosticCategory::BusinessRules
             }
 
@@ -350,6 +359,8 @@ impl DiagnosticCode {
 
             DiagnosticCode::InvalidSchemaStructure
             | DiagnosticCode::EmptyModel
+            | DiagnosticCode::ModelTooSmall
+            | DiagnosticCode::ModelTooLarge
             | DiagnosticCode::UnusedDeclaration
             | DiagnosticCode::MissingField
             | DiagnosticCode::MissingDatasource => {
@@ -371,6 +382,9 @@ impl DiagnosticCode {
             | DiagnosticCode::IndexSuggestion
             | DiagnosticCode::QueryOptimizationHint
             | DiagnosticCode::EmptyModel
+            | DiagnosticCode::ModelTooSmall
+            | DiagnosticCode::ModelTooLarge
+            | DiagnosticCode::SecuritySuggestion
             | DiagnosticCode::UnusedDeclaration => DiagnosticSeverity::Warning,
             _ => DiagnosticSeverity::Error,
         }
@@ -1248,7 +1262,9 @@ mod tests {
         assert_eq!(DiagnosticCode::IndexSuggestion.as_str(), "W102");
         assert_eq!(DiagnosticCode::QueryOptimizationHint.as_str(), "W103");
         assert_eq!(DiagnosticCode::EmptyModel.as_str(), "W201");
-        assert_eq!(DiagnosticCode::UnusedDeclaration.as_str(), "W202");
+        assert_eq!(DiagnosticCode::ModelTooSmall.as_str(), "W202");
+        assert_eq!(DiagnosticCode::ModelTooLarge.as_str(), "W203");
+        assert_eq!(DiagnosticCode::UnusedDeclaration.as_str(), "W204");
         assert_eq!(DiagnosticCode::NamingConvention.as_str(), "W603");
         assert_eq!(DiagnosticCode::ExperimentalFeature.as_str(), "W604");
 
@@ -1260,6 +1276,9 @@ mod tests {
         // Naming
         assert_eq!(DiagnosticCode::InvalidIdentifier.as_str(), "E601");
         assert_eq!(DiagnosticCode::ReservedKeyword.as_str(), "E602");
+
+        // Information
+        assert_eq!(DiagnosticCode::SecuritySuggestion.as_str(), "I001");
 
         // Internal
         assert_eq!(DiagnosticCode::InternalError.as_str(), "E999");

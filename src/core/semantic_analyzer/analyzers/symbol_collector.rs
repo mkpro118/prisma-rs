@@ -279,79 +279,75 @@ impl PhaseAnalyzer for SymbolCollectionAnalyzer {
             for declaration in &schema.declarations {
                 match declaration {
                     Declaration::Model(m) => {
-                        if let Err(err) = symtab.add_model(m) {
-                            if let SymbolError::DuplicateSymbol {
+                        if let Err(err) = symtab.add_model(m)
+                            && let SymbolError::DuplicateSymbol {
                                 name,
                                 existing_span,
                                 new_span,
                                 ..
                             } = err
-                            {
-                                diagnostics.push(
-                                    SemanticDiagnostic::duplicate_declaration(
-                                        new_span,
-                                        &name,
-                                        existing_span,
-                                    ),
-                                );
-                            }
+                        {
+                            diagnostics.push(
+                                SemanticDiagnostic::duplicate_declaration(
+                                    new_span,
+                                    &name,
+                                    existing_span,
+                                ),
+                            );
                         }
                     }
                     Declaration::Enum(e) => {
-                        if let Err(err) = symtab.add_enum(e) {
-                            if let SymbolError::DuplicateSymbol {
+                        if let Err(err) = symtab.add_enum(e)
+                            && let SymbolError::DuplicateSymbol {
                                 name,
                                 existing_span,
                                 new_span,
                                 ..
                             } = err
-                            {
-                                diagnostics.push(
-                                    SemanticDiagnostic::duplicate_declaration(
-                                        new_span,
-                                        &name,
-                                        existing_span,
-                                    ),
-                                );
-                            }
+                        {
+                            diagnostics.push(
+                                SemanticDiagnostic::duplicate_declaration(
+                                    new_span,
+                                    &name,
+                                    existing_span,
+                                ),
+                            );
                         }
                     }
                     Declaration::Datasource(d) => {
-                        if let Err(err) = symtab.add_datasource(d) {
-                            if let SymbolError::DuplicateSymbol {
+                        if let Err(err) = symtab.add_datasource(d)
+                            && let SymbolError::DuplicateSymbol {
                                 name,
                                 existing_span,
                                 new_span,
                                 ..
                             } = err
-                            {
-                                diagnostics.push(
-                                    SemanticDiagnostic::duplicate_declaration(
-                                        new_span,
-                                        &name,
-                                        existing_span,
-                                    ),
-                                );
-                            }
+                        {
+                            diagnostics.push(
+                                SemanticDiagnostic::duplicate_declaration(
+                                    new_span,
+                                    &name,
+                                    existing_span,
+                                ),
+                            );
                         }
                     }
                     Declaration::Generator(g) => {
-                        if let Err(err) = symtab.add_generator(g) {
-                            if let SymbolError::DuplicateSymbol {
+                        if let Err(err) = symtab.add_generator(g)
+                            && let SymbolError::DuplicateSymbol {
                                 name,
                                 existing_span,
                                 new_span,
                                 ..
                             } = err
-                            {
-                                diagnostics.push(
-                                    SemanticDiagnostic::duplicate_declaration(
-                                        new_span,
-                                        &name,
-                                        existing_span,
-                                    ),
-                                );
-                            }
+                        {
+                            diagnostics.push(
+                                SemanticDiagnostic::duplicate_declaration(
+                                    new_span,
+                                    &name,
+                                    existing_span,
+                                ),
+                            );
                         }
                     }
                     Declaration::Type(_t) => {

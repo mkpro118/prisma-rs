@@ -288,14 +288,14 @@ impl PhaseAnalyzer for TypeResolutionAnalyzer {
 
         // Backward-compatibility for tests that add dependencies to self.type_resolver
         // If the analyzer's internal resolver has dependency edges, also check it for cycles.
-        if self.type_resolver.stats().dependency_edges > 0 {
-            if let Err(err) = self.type_resolver.check_circular_dependencies() {
-                Self::add_type_resolution_error(
-                    err,
-                    &schema.span,
-                    &mut diagnostics,
-                );
-            }
+        if self.type_resolver.stats().dependency_edges > 0
+            && let Err(err) = self.type_resolver.check_circular_dependencies()
+        {
+            Self::add_type_resolution_error(
+                err,
+                &schema.span,
+                &mut diagnostics,
+            );
         }
 
         PhaseResult::new(diagnostics)
