@@ -336,8 +336,6 @@ impl Parser<TypeRef> for TypeRefParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used, clippy::expect_used)]
-
     use crate::core::parser::components::types::{
         NamedTypeParser, TypeRefParser,
     };

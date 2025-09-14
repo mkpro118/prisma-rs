@@ -26,14 +26,16 @@ pub(crate) fn span_from_to(a: &SymbolSpan, b: &SymbolSpan) -> SymbolSpan {
 
 /// Extract documentation text from a `DocComment` token.
 ///
-/// Normalizes the raw doc comment text by stripping an optional leading
-/// `///` prefix and trimming surrounding whitespace. Works for inputs with
-/// or without the `///` prefix.
+/// Given a `DocComment` token whose text is the content after the `///`
+/// marker, remove at most one leading space. Preserve all other whitespace.
 #[must_use]
 pub fn extract_doc_text(token: &Token) -> Option<String> {
     if let TokenType::DocComment(text) = token.r#type() {
-        let s = text.strip_prefix("///").unwrap_or(text).trim();
-        Some(s.to_string())
+        if let Some(rest) = text.strip_prefix(' ') {
+            Some(rest.to_string())
+        } else {
+            Some(text.to_string())
+        }
     } else {
         None
     }
@@ -114,8 +116,6 @@ pub fn parse_leading_docs(stream: &mut dyn TokenStream) -> Option<Docs> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use super::*;
     use crate::core::parser::stream::VectorTokenStream;
 
@@ -125,12 +125,26 @@ mod tests {
 
     #[test]
     fn extract_doc_text_variants() {
-        let t = tok(TokenType::DocComment("/// hello".into()));
+        let t = tok(TokenType::DocComment(" hello".into()));
         assert_eq!(extract_doc_text(&t).unwrap(), "hello");
         let t = tok(TokenType::DocComment("plain".into()));
         assert_eq!(extract_doc_text(&t).unwrap(), "plain");
         let t = tok(TokenType::Comment(" not-doc".into()));
         assert!(extract_doc_text(&t).is_none());
+    }
+
+    #[test]
+    fn extract_doc_text_removes_only_one_space() {
+        let t = tok(TokenType::DocComment("   many spaces".into()));
+        // Only the first leading space is removed; remaining preserved
+        assert_eq!(extract_doc_text(&t).unwrap(), "  many spaces");
+    }
+
+    #[test]
+    fn extract_doc_text_preserves_tabs_and_other_whitespace() {
+        let t = tok(TokenType::DocComment("\tTabbed doc".into()));
+        // Not a space prefix, so unchanged
+        assert_eq!(extract_doc_text(&t).unwrap(), "\tTabbed doc");
     }
 
     #[test]

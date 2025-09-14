@@ -300,8 +300,6 @@ impl Parser<QualifiedIdent> for QualifiedIdentParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use crate::core::parser::components::primitives::{
         IdentParser, QualifiedIdentParser,
     };

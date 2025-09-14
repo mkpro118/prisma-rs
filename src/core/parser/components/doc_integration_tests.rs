@@ -1,7 +1,5 @@
 //! Integration tests for doc comment association across all parsers.
 
-#![expect(clippy::unwrap_used)]
-
 use crate::core::parser::components::attributes::{
     BlockAttributeParser, FieldAttributeParser,
 };
@@ -19,7 +17,7 @@ use crate::core::scanner::tokens::{Token, TokenType};
 /// Helper to create a `DocComment` token.
 fn doc_token(text: &str, line: u32) -> Token {
     Token::new(
-        TokenType::DocComment(format!("///{text}")),
+        TokenType::DocComment(text.to_string()),
         (line, 1),
         (line, 4 + u32::try_from(text.len()).unwrap_or(0)),
     )

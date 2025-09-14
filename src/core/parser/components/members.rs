@@ -606,8 +606,6 @@ impl Parser<EnumMember> for EnumMemberParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::expect_used, clippy::unwrap_used)]
-
     use crate::core::parser::ast::{
         EnumMember, Expr, HasNodeType, ModelMember, NamedType, TypeRef,
     };

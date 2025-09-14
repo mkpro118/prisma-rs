@@ -810,8 +810,6 @@ impl DeclarationWrapper<TypeDecl> for TypeDeclParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use crate::core::parser::components::declarations::{
         DatasourceParser, EnumParser, GeneratorParser, ModelParser,
         TypeDeclParser,
