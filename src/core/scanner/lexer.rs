@@ -12,6 +12,15 @@
 //! consumed. Recognizer order is significant and should be chosen to avoid
 //! ambiguity.
 //!
+//! Error recovery: by default, the lexer returns lexical errors without
+//! advancing past the offending character when they originate from a
+//! recognizer (e.g., invalid identifier character). This preserves precise
+//! positions but can “stick” at the same input offset if the caller keeps
+//! requesting more tokens. Opt-in recovery can be enabled via
+//! `with_error_recovery(true)`, which advances the input by one character
+//! after an error so subsequent calls can make forward progress. Recovery
+//! does not modify the error’s span or message.
+//!
 //! ## Examples
 //! ```
 //! # use prisma_rs::core::scanner::{Lexer, TokenType};
@@ -326,6 +335,8 @@ pub struct Lexer {
     // Buffer for comment coalescing: stores the last comment token of each type
     last_comment: Option<Token>,
     last_doc_comment: Option<Token>,
+    // Opt-in: advance one character after a recognizer error to make progress
+    recover_on_error: bool,
 }
 
 impl Lexer {
@@ -341,6 +352,7 @@ impl Lexer {
             token_queue: std::collections::VecDeque::new(),
             last_comment: None,
             last_doc_comment: None,
+            recover_on_error: false,
         }
     }
 
@@ -350,6 +362,23 @@ impl Lexer {
         let scanner = Box::new(StringCharacterStream::new(input));
         let recognizers = default_recognizers();
         Self::new(scanner, recognizers)
+    }
+
+    /// Create a lexer for `input` with the default recognizers and explicit
+    /// error recovery configuration.
+    #[must_use]
+    pub fn default_for_input_with_recovery(
+        input: &str,
+        recover_on_error: bool,
+    ) -> Self {
+        Self::default_for_input(input).with_error_recovery(recover_on_error)
+    }
+
+    /// Enable or disable one-character recovery after recognizer errors.
+    #[must_use]
+    pub fn with_error_recovery(mut self, recover_on_error: bool) -> Self {
+        self.recover_on_error = recover_on_error;
+        self
     }
 
     /// Parse and return the next token.
@@ -390,16 +419,24 @@ impl Lexer {
             let mut token_opt: Option<Token> = None;
             for recognizer in &self.recognizers {
                 if recognizer.can_handle(self.scanner.as_ref()) {
-                    let token_type =
-                        recognizer.consume(self.scanner.as_mut())?;
-                    let end_pos = self.scanner.position();
-                    let start_loc = start_pos.to_symbol_location();
-                    let end_loc = end_pos.to_symbol_location();
-                    token_opt = Some(Token::new(
-                        token_type,
-                        (start_loc.line, start_loc.column),
-                        (end_loc.line, end_loc.column),
-                    ));
+                    match recognizer.consume(self.scanner.as_mut()) {
+                        Ok(token_type) => {
+                            let end_pos = self.scanner.position();
+                            let start_loc = start_pos.to_symbol_location();
+                            let end_loc = end_pos.to_symbol_location();
+                            token_opt = Some(Token::new(
+                                token_type,
+                                (start_loc.line, start_loc.column),
+                                (end_loc.line, end_loc.column),
+                            ));
+                        }
+                        Err(err) => {
+                            if self.recover_on_error {
+                                let _ = self.scanner.advance();
+                            }
+                            return Err(err);
+                        }
+                    }
                     break;
                 }
             }
@@ -513,10 +550,7 @@ pub fn default_recognizers() -> Vec<Box<dyn TokenRecognizer>> {
 ///
 /// Keywords take precedence over identifiers when both could match.
 #[derive(Debug)]
-pub struct KeywordRecognizer {
-    // Map from keyword text to token type.
-    keywords: std::collections::HashMap<&'static str, TokenType>,
-}
+pub struct KeywordRecognizer;
 
 impl Default for KeywordRecognizer {
     fn default() -> Self {
@@ -528,22 +562,32 @@ impl KeywordRecognizer {
     /// Create a keyword recognizer with the built-in set.
     #[must_use]
     pub fn new() -> Self {
-        let mut keywords = std::collections::HashMap::new();
-        keywords.insert("generator", TokenType::Generator);
-        keywords.insert("datasource", TokenType::DataSource);
-        keywords.insert("model", TokenType::Model);
-        keywords.insert("enum", TokenType::Enum);
-        keywords.insert("type", TokenType::Type);
-        keywords.insert("String", TokenType::String);
-        keywords.insert("Int", TokenType::Int);
-        keywords.insert("Float", TokenType::Float);
-        keywords.insert("Boolean", TokenType::Boolean);
-        keywords.insert("DateTime", TokenType::DateTime);
-        keywords.insert("Json", TokenType::Json);
-        keywords.insert("Bytes", TokenType::Bytes);
-        keywords.insert("Decimal", TokenType::Decimal);
+        Self
+    }
 
-        Self { keywords }
+    fn keywords() -> &'static std::collections::HashMap<&'static str, TokenType>
+    {
+        use std::sync::OnceLock;
+        static MAP: OnceLock<
+            std::collections::HashMap<&'static str, TokenType>,
+        > = OnceLock::new();
+        MAP.get_or_init(|| {
+            let mut keywords = std::collections::HashMap::new();
+            keywords.insert("generator", TokenType::Generator);
+            keywords.insert("datasource", TokenType::DataSource);
+            keywords.insert("model", TokenType::Model);
+            keywords.insert("enum", TokenType::Enum);
+            keywords.insert("type", TokenType::Type);
+            keywords.insert("String", TokenType::String);
+            keywords.insert("Int", TokenType::Int);
+            keywords.insert("Float", TokenType::Float);
+            keywords.insert("Boolean", TokenType::Boolean);
+            keywords.insert("DateTime", TokenType::DateTime);
+            keywords.insert("Json", TokenType::Json);
+            keywords.insert("Bytes", TokenType::Bytes);
+            keywords.insert("Decimal", TokenType::Decimal);
+            keywords
+        })
     }
 
     fn peek_identifier(input: &dyn CharacterStream) -> String {
@@ -582,7 +626,7 @@ impl TokenRecognizer for KeywordRecognizer {
             && (ch.is_alphabetic() || ch == '_')
         {
             let word = Self::peek_identifier(input);
-            return self.keywords.contains_key(word.as_str());
+            return Self::keywords().contains_key(word.as_str());
         }
         false
     }
@@ -592,7 +636,7 @@ impl TokenRecognizer for KeywordRecognizer {
         input: &mut dyn CharacterStream,
     ) -> Result<TokenType, LexError> {
         let word = Self::consume_identifier(input);
-        Ok(self.keywords[word.as_str()].clone())
+        Ok(Self::keywords()[word.as_str()].clone())
     }
 }
 
@@ -734,28 +778,25 @@ impl TokenRecognizer for StringLiteralRecognizer {
         input: &mut dyn CharacterStream,
     ) -> Result<TokenType, LexError> {
         let mut content = String::new();
+        let mut backslash_run: usize = 0;
 
         input.advance(); // opening quote
 
         while let Some(ch) = input.current() {
             if ch == '"' {
-                let mut backslash_count = 0;
-                let mut temp_offset = content.len();
-
-                while temp_offset > 0
-                    && content.chars().nth(temp_offset - 1) == Some('\\')
-                {
-                    backslash_count += 1;
-                    temp_offset -= 1;
-                }
-
-                if backslash_count % 2 == 0 {
+                if backslash_run % 2 == 0 {
                     input.advance(); // closing quote
                     return Ok(TokenType::Literal(content));
                 }
+                // Escaped quote: include it, reset run
+                content.push(ch);
+                backslash_run = 0;
+                input.advance();
+                continue;
             }
 
             content.push(ch);
+            backslash_run = if ch == '\\' { backslash_run + 1 } else { 0 };
             input.advance();
         }
 
@@ -840,8 +881,31 @@ impl TokenRecognizer for NumberLiteralRecognizer {
                         .last()
                         .is_some_and(|last| last.is_ascii_digit()) =>
                 {
+                    // Validate exponent has at least one digit after optional sign
+                    // Look ahead: 'e' [ '+' | '-' ] digit
+                    let has_digit = match (input.peek(1), input.peek(2)) {
+                        (Some(_sign @ ('+' | '-')), Some(d2)) => {
+                            d2.is_ascii_digit()
+                        }
+                        (Some(d1), _) => d1.is_ascii_digit(),
+                        (None, _) => false,
+                    };
+                    if !has_digit {
+                        let pos = input.position().to_symbol_location(); // at the 'e'
+                        let span = SymbolSpan {
+                            start: pos.clone(),
+                            end: pos,
+                        };
+                        return Err(LexError::new(
+                            "Invalid exponent: missing digits after 'e'"
+                                .to_string(),
+                            span,
+                        ));
+                    }
+
+                    // Valid exponent header; consume it
                     number.push(ch);
-                    input.advance();
+                    input.advance(); // 'e' / 'E'
                     if let Some(sign) = input.current()
                         && (sign == '+' || sign == '-')
                     {
@@ -1199,6 +1263,16 @@ mod tests {
     }
 
     #[test]
+    fn string_literal_long_backslashes_performance_sanity() {
+        let bs = "\\".repeat(512);
+        let input = format!("\"{bs}\\\"end\"");
+        let tokens: Result<Vec<_>, _> = Lexer::tokenize(&input).collect();
+        let toks = tokens.unwrap();
+        assert!(matches!(*toks[0].r#type(), TokenType::Literal(_)));
+        assert!(matches!(*toks[1].r#type(), TokenType::EOF));
+    }
+
+    #[test]
     fn number_literal_recognizer() {
         let recognizer = NumberLiteralRecognizer::new();
 
@@ -1225,8 +1299,108 @@ mod tests {
         assert!(recognizer.can_handle(&stream));
         let token = recognizer.consume(&mut stream).unwrap();
         assert_eq!(token, TokenType::Literal("1e10".to_string()));
+
+        // Valid with sign
+        let mut stream = StringCharacterStream::new("1.0e+10");
+        assert!(recognizer.can_handle(&stream));
+        let token = recognizer.consume(&mut stream).unwrap();
+        assert_eq!(token, TokenType::Literal("1.0e+10".to_string()));
+
+        // Valid decimals
+        let mut stream = StringCharacterStream::new("1.0");
+        assert!(recognizer.can_handle(&stream));
+        let token = recognizer.consume(&mut stream).unwrap();
+        assert_eq!(token, TokenType::Literal("1.0".to_string()));
+
+        // Invalid exponents should error with precise message
+        for bad in &["1e", "1e+", "1e-"] {
+            let mut stream = StringCharacterStream::new(bad);
+            assert!(recognizer.can_handle(&stream));
+            let err = recognizer.consume(&mut stream).unwrap_err();
+            assert!(err.message().contains("Invalid exponent"));
+        }
+
+        // Fraction without digits after dot should not include dot
+        let mut lexer = Lexer::default_for_input("1.");
+        let first = lexer.next_token().unwrap().unwrap();
+        assert_eq!(*first.r#type(), TokenType::Literal("1".into()));
+        let second = lexer.next_token().unwrap().unwrap();
+        assert_eq!(*second.r#type(), TokenType::Dot);
     }
 
+    #[test]
+    fn number_invalid_exponent_error_span_precise() {
+        // Error should point at the 'e' (column 2 for "1e")
+        let recognizer = NumberLiteralRecognizer::new();
+        let mut stream = StringCharacterStream::new("1e");
+        assert!(recognizer.can_handle(&stream));
+        let err = recognizer.consume(&mut stream).unwrap_err();
+        let span = err.span();
+        assert_eq!(span.start.line, 1);
+        assert_eq!(span.start.column, 2);
+        assert_eq!(span.end.line, 1);
+        assert_eq!(span.end.column, 2);
+        assert!(err.message().contains("Invalid exponent"));
+    }
+
+    #[test]
+    fn number_invalid_exponent_error_span_with_leading_minus() {
+        // Error should point at the 'e' (column 3 for "-1e")
+        let recognizer = NumberLiteralRecognizer::new();
+        let mut stream = StringCharacterStream::new("-1e");
+        assert!(recognizer.can_handle(&stream));
+        let err = recognizer.consume(&mut stream).unwrap_err();
+        let span = err.span();
+        assert_eq!(span.start.line, 1);
+        assert_eq!(span.start.column, 3);
+        assert_eq!(span.end.line, 1);
+        assert_eq!(span.end.column, 3);
+        assert!(err.message().contains("Invalid exponent"));
+    }
+
+    #[test]
+    fn number_valid_exponent_with_leading_minus() {
+        let recognizer = NumberLiteralRecognizer::new();
+        let mut stream = StringCharacterStream::new("-1e10");
+        assert!(recognizer.can_handle(&stream));
+        let token = recognizer.consume(&mut stream).unwrap();
+        assert_eq!(token, TokenType::Literal("-1e10".to_string()));
+    }
+
+    #[test]
+    fn number_decimal_dot_splits_before_non_digit() {
+        let mut lexer = Lexer::default_for_input("1.a");
+        let t1 = lexer.next_token().unwrap().unwrap();
+        let t2 = lexer.next_token().unwrap().unwrap();
+        let t3 = lexer.next_token().unwrap().unwrap();
+        assert_eq!(*t1.r#type(), TokenType::Literal("1".into()));
+        assert_eq!(*t2.r#type(), TokenType::Dot);
+        assert_eq!(*t3.r#type(), TokenType::Identifier("a".into()));
+    }
+
+    #[test]
+    fn number_negative_decimal_dot_splits_before_e() {
+        let mut lexer = Lexer::default_for_input("-1.e+5");
+        let t1 = lexer.next_token().unwrap().unwrap();
+        let t2 = lexer.next_token().unwrap().unwrap();
+        let t3 = lexer.next_token().unwrap().unwrap();
+        assert_eq!(*t1.r#type(), TokenType::Literal("-1".into()));
+        assert_eq!(*t2.r#type(), TokenType::Dot);
+        assert_eq!(*t3.r#type(), TokenType::Identifier("e".into()));
+        // We don't assert beyond here; subsequent tokens may error or split further.
+    }
+
+    #[test]
+    fn string_quote_closing_even_odd_backslashes() {
+        // Even number of backslashes before quote: quote closes
+        let mut it = Lexer::tokenize("\"\\\\\""); // literal: "\\" (two backslashes)
+        let lit = it.next().unwrap().unwrap();
+        assert_eq!(*lit.r#type(), TokenType::Literal("\\\\".to_string()));
+        // Odd number of backslashes before quote: quote is escaped, then content continues
+        let mut it = Lexer::tokenize("\"\\\"x\"");
+        let lit = it.next().unwrap().unwrap();
+        assert_eq!(*lit.r#type(), TokenType::Literal("\\\"x".to_string()));
+    }
     #[test]
     fn comment_recognizer() {
         let recognizer = CommentRecognizer::new();
@@ -1356,6 +1530,39 @@ mod tests {
     }
 
     #[test]
+    fn lexer_error_recovery_advances_on_identifier_error() {
+        // Non-ASCII character in the middle causes recognizer error; with recovery on,
+        // the lexer advances one character so subsequent calls make progress.
+        let mut lexer =
+            Lexer::default_for_input("abcÎdef").with_error_recovery(true);
+        // First call errors on Î
+        let err1 = lexer.next_token().expect_err("should error on non-ASCII");
+        assert!(err1.message().contains('Î'));
+
+        // Next call should produce a valid identifier ("def") after advancing past Î
+        let tok = lexer.next_token().unwrap().unwrap();
+        match tok.r#type() {
+            TokenType::Identifier(s) => assert_eq!(s, "def"),
+            other => panic!("expected Identifier(\"def\"), got {other:?}"),
+        }
+
+        // Next should be EOF
+        let eof = lexer.next_token().unwrap().unwrap();
+        assert!(matches!(*eof.r#type(), TokenType::EOF));
+    }
+
+    #[test]
+    fn lexer_error_recovery_default_mode_stays_sticky() {
+        // By default, recovery is off; the lexer will report the same recognizer error
+        // again if the caller keeps requesting more tokens at the same position.
+        let mut lexer = Lexer::default_for_input("abcÎdef");
+        let e1 = lexer.next_token().expect_err("first error expected");
+        assert!(e1.message().contains('Î'));
+        let e2 = lexer.next_token().expect_err("second error still at Î");
+        assert!(e2.message().contains('Î'));
+    }
+
+    #[test]
     fn number_edge_cases() {
         let test_cases = vec![
             ("0", "0"),
@@ -1387,22 +1594,24 @@ mod tests {
 
         for case in invalid_cases {
             let mut lexer = Lexer::default_for_input(case);
-            // These should parse as separate tokens or identifiers, not valid numbers
-            let tokens: Vec<_> =
-                std::iter::from_fn(|| match lexer.next_token() {
-                    Ok(Some(token))
-                        if !matches!(token.r#type(), TokenType::EOF) =>
-                    {
-                        Some(token)
+            // These should either produce a lex error or parse as separate tokens
+            let mut produced_any = false;
+            loop {
+                match lexer.next_token() {
+                    Ok(Some(token)) => {
+                        if matches!(token.r#type(), TokenType::EOF) {
+                            break;
+                        }
+                        produced_any = true;
                     }
-                    _ => None,
-                })
-                .collect();
-
-            assert!(
-                !tokens.is_empty(),
-                "Should produce some tokens for: {case}"
-            );
+                    Ok(None) => break,
+                    Err(_) => {
+                        produced_any = true; // Accept lexing error as valid outcome
+                        break;
+                    }
+                }
+            }
+            assert!(produced_any, "Expected tokens or error for: {case}");
         }
     }
 
