@@ -1,10 +1,12 @@
 use compiler_macros::EnumKindName;
 
+pub mod context;
 pub mod diagnostics;
 pub mod symbol_table;
 pub mod type_resolver;
 
 // Re-export main types for convenience
+pub use context::{AnalysisContext, AnalysisResult};
 pub use diagnostics::{DiagnosticCode, FixHint, SemanticDiagnostic};
 pub use symbol_table::{Symbol, SymbolTable, SymbolType};
 
