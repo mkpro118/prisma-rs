@@ -1023,8 +1023,6 @@ impl Parser<Expr> for ExpressionParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use crate::core::parser::components::expressions::ExpressionParser;
     use crate::core::parser::components::helpers::{
         extract_doc_text, parse_leading_docs,
@@ -1442,7 +1440,7 @@ mod tests {
         end_col: u32,
     ) -> Token {
         Token::new(
-            TokenType::DocComment(format!("///{text}")),
+            TokenType::DocComment(text.to_string()),
             (line, start_col),
             (line, end_col),
         )
@@ -1639,9 +1637,10 @@ mod tests {
         assert!(result.is_some());
         let docs = result.unwrap();
         assert_eq!(docs.lines.len(), 3);
-        assert_eq!(docs.lines[0], ""); // Trimmed to empty
+        // Only a single leading space is removed; remaining spaces preserved
+        assert_eq!(docs.lines[0], "  ");
         assert_eq!(docs.lines[1], "Real content");
-        assert_eq!(docs.lines[2], ""); // Trimmed to empty
+        assert_eq!(docs.lines[2], "    ");
     }
 
     #[test]
@@ -1701,7 +1700,7 @@ mod tests {
     #[test]
     fn extract_doc_text_with_prefix() {
         let token = Token::new(
-            TokenType::DocComment("/// This is documentation".to_string()),
+            TokenType::DocComment(" This is documentation".to_string()),
             (1, 1),
             (1, 25),
         );
@@ -1725,13 +1724,14 @@ mod tests {
     #[test]
     fn extract_doc_text_with_extra_whitespace() {
         let token = Token::new(
-            TokenType::DocComment("///   This has extra spaces   ".to_string()),
+            TokenType::DocComment("   This has extra spaces   ".to_string()),
             (1, 1),
             (1, 31),
         );
 
         let result = extract_doc_text(&token);
-        assert_eq!(result, Some("This has extra spaces".to_string()));
+        // Only a single leading space is removed; preserve the rest
+        assert_eq!(result, Some("  This has extra spaces   ".to_string()));
     }
 
     #[test]
@@ -1750,17 +1750,17 @@ mod tests {
     fn docs_span_calculation() {
         let tokens = vec![
             Token::new(
-                TokenType::DocComment("/// First".to_string()),
+                TokenType::DocComment(" First".to_string()),
                 (1, 1),
                 (1, 10),
             ),
             Token::new(
-                TokenType::DocComment("/// Second".to_string()),
+                TokenType::DocComment(" Second".to_string()),
                 (2, 1),
                 (2, 11),
             ),
             Token::new(
-                TokenType::DocComment("/// Third".to_string()),
+                TokenType::DocComment(" Third".to_string()),
                 (3, 1),
                 (3, 10),
             ),
