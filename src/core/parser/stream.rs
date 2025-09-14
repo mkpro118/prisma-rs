@@ -399,8 +399,6 @@ impl<T: ?Sized + TokenStream> TokenStreamExt for T {}
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::expect_used, clippy::unwrap_used)]
-
     use super::*;
 
     fn create_test_token(token_type: TokenType) -> Token {

@@ -250,7 +250,6 @@ impl TokenStream for ObservedTokenStream<'_> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::expect_used)]
     use super::*;
     use crate::core::parser::stream::VectorTokenStream;
 

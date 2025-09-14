@@ -546,7 +546,6 @@ struct Block {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
     use super::*;
     use std::sync::{
         Arc,

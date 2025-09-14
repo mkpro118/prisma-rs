@@ -802,8 +802,6 @@ impl Parser<BlockAttribute> for BlockAttributeParser {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used)]
-
     use crate::core::parser::ParserOptions;
     use crate::core::parser::VectorTokenStream;
     use crate::core::parser::ast::Arg;
