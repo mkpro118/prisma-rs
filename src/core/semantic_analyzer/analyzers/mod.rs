@@ -5,6 +5,8 @@
 //! the `PhaseAnalyzer` trait and focuses on a specific aspect of validation.
 
 pub mod symbol_collector;
+pub mod type_resolution;
 
 // Re-export implemented analyzers for convenience
 pub use symbol_collector::SymbolCollectionAnalyzer;
+pub use type_resolution::TypeResolutionAnalyzer;

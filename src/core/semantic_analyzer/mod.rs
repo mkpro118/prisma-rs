@@ -16,6 +16,7 @@ pub use traits::{
 };
 // Re-export analyzer implementations
 pub use analyzers::symbol_collector::SymbolCollectionAnalyzer;
+pub use analyzers::type_resolution::TypeResolutionAnalyzer;
 
 /// Configuration options for semantic analysis.
 /// Validation mode configuration
