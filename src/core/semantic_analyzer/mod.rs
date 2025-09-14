@@ -2,6 +2,7 @@ use compiler_macros::EnumKindName;
 
 pub mod diagnostics;
 pub mod symbol_table;
+pub mod type_resolver;
 
 // Re-export main types for convenience
 pub use diagnostics::{DiagnosticCode, FixHint, SemanticDiagnostic};
