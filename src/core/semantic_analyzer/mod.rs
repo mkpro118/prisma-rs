@@ -1,5 +1,6 @@
 use compiler_macros::EnumKindName;
 
+pub mod analyzers;
 pub mod context;
 pub mod diagnostics;
 pub mod symbol_table;
@@ -13,6 +14,8 @@ pub use symbol_table::{Symbol, SymbolTable, SymbolType};
 pub use traits::{
     AttributeAnalyzer, DeclarationAnalyzer, PhaseAnalyzer, RelationshipAnalyzer,
 };
+// Re-export analyzer implementations
+pub use analyzers::symbol_collector::SymbolCollectionAnalyzer;
 
 /// Configuration options for semantic analysis.
 /// Validation mode configuration
