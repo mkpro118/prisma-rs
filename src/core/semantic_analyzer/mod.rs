@@ -14,7 +14,9 @@ pub use symbol_table::{Symbol, SymbolTable, SymbolType};
 pub use traits::{
     AttributeAnalyzer, DeclarationAnalyzer, PhaseAnalyzer, RelationshipAnalyzer,
 };
-// Re-export analyzer implementations
+// Re-export analyzer implementations; alias the relationship phase to avoid a
+// type-name collision with the RelationshipAnalyzer trait.
+pub use analyzers::relationship::RelationshipAnalyzer as RelationshipPhase;
 pub use analyzers::symbol_collector::SymbolCollectionAnalyzer;
 pub use analyzers::type_resolution::TypeResolutionAnalyzer;
 
