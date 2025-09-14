@@ -1,9 +1,11 @@
 use compiler_macros::EnumKindName;
 
 pub mod diagnostics;
+pub mod symbol_table;
 
 // Re-export main types for convenience
 pub use diagnostics::{DiagnosticCode, FixHint, SemanticDiagnostic};
+pub use symbol_table::{Symbol, SymbolTable, SymbolType};
 
 /// Configuration options for semantic analysis.
 /// Validation mode configuration
