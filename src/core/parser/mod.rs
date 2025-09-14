@@ -4,6 +4,7 @@
 //! parser logic, and supporting utilities.
 
 pub mod ast;
+pub mod components;
 pub mod config;
 pub mod context;
 pub mod grammar;
