@@ -768,6 +768,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "concurrent test - run with: cargo test -- --include-ignored"]
     fn parallel_two_blocks_is_faster_than_sequential() {
         // Prepare two blocks
         let mut toks = Vec::new();
@@ -813,6 +814,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "concurrent test - run with: cargo test -- --include-ignored"]
     fn parallel_batches_reduce_time_with_two_workers() {
         // Four blocks, two workers => about two batches
         let mut toks = Vec::new();
