@@ -1,5 +1,10 @@
 use compiler_macros::EnumKindName;
 
+pub mod diagnostics;
+
+// Re-export main types for convenience
+pub use diagnostics::{DiagnosticCode, FixHint, SemanticDiagnostic};
+
 /// Configuration options for semantic analysis.
 /// Validation mode configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
