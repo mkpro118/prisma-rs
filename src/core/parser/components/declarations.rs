@@ -144,6 +144,14 @@ impl Parser<ModelDecl> for ModelParser {
         let mut member_parser = ModelMemberParser;
 
         while !stream.check(TokenType::RightBrace) && !stream.is_at_end() {
+            if matches!(
+                stream.peek().map(Token::r#type),
+                Some(TokenType::Comment(_))
+            ) {
+                stream.next();
+                continue;
+            }
+
             if member_parser.can_parse(stream) {
                 let mut res = member_parser.parse(stream, options);
                 diags.append(&mut res.diagnostics);
@@ -294,6 +302,14 @@ impl Parser<EnumDecl> for EnumParser {
         let mut member_parser = EnumMemberParser;
 
         while !stream.check(TokenType::RightBrace) && !stream.is_at_end() {
+            if matches!(
+                stream.peek().map(Token::r#type),
+                Some(TokenType::Comment(_))
+            ) {
+                stream.next();
+                continue;
+            }
+
             if member_parser.can_parse(stream) {
                 let mut res = member_parser.parse(stream, options);
                 diags.append(&mut res.diagnostics);
@@ -444,6 +460,14 @@ impl Parser<DatasourceDecl> for DatasourceParser {
         let mut assignment_parser = AssignmentParser;
 
         while !stream.check(TokenType::RightBrace) && !stream.is_at_end() {
+            if matches!(
+                stream.peek().map(Token::r#type),
+                Some(TokenType::Comment(_))
+            ) {
+                stream.next();
+                continue;
+            }
+
             if assignment_parser.can_parse(stream) {
                 let mut res = assignment_parser.parse(stream, options);
                 diags.append(&mut res.diagnostics);
@@ -583,6 +607,14 @@ impl Parser<GeneratorDecl> for GeneratorParser {
         let mut assignment_parser = AssignmentParser;
 
         while !stream.check(TokenType::RightBrace) && !stream.is_at_end() {
+            if matches!(
+                stream.peek().map(Token::r#type),
+                Some(TokenType::Comment(_))
+            ) {
+                stream.next();
+                continue;
+            }
+
             if assignment_parser.can_parse(stream) {
                 let mut res = assignment_parser.parse(stream, options);
                 diags.append(&mut res.diagnostics);

@@ -784,7 +784,7 @@ impl TokenRecognizer for StringLiteralRecognizer {
 
         while let Some(ch) = input.current() {
             if ch == '"' {
-                if backslash_run % 2 == 0 {
+                if backslash_run.is_multiple_of(2) {
                     input.advance(); // closing quote
                     return Ok(TokenType::Literal(content));
                 }
@@ -1781,7 +1781,7 @@ mod tests {
         let tokens: Result<Vec<_>, _> = Lexer::tokenize(input).collect();
         let tokens = tokens.unwrap();
 
-        let expected_types = vec![
+        let expected_types = [
             TokenType::Model,
             TokenType::Identifier("User".to_string()),
             TokenType::LeftBrace,

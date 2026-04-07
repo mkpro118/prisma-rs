@@ -5,7 +5,9 @@
 //! Spans are preserved, comments are ignored for lookahead where relevant,
 //! and trailing commas are accepted in arrays and objects.
 
-use crate::core::parser::components::primitives::QualifiedIdentParser;
+use crate::core::parser::components::{
+    attributes::ArgListParser, primitives::QualifiedIdentParser,
+};
 use crate::core::parser::stream::TokenStreamExt;
 use crate::core::parser::{
     ast::{
@@ -119,6 +121,27 @@ impl ExpressionParser {
                 "Unexpected end of input",
             ))
         }
+    }
+
+    /// Return whether a literal token payload encodes a bool or null literal.
+    #[must_use]
+    fn is_bool_or_null(value: &str) -> bool {
+        matches!(value, "true" | "false" | "null")
+    }
+
+    /// Return whether a literal token payload should be treated as a string.
+    ///
+    /// The scanner strips surrounding quotes from string literals, so parser
+    /// classification cannot rely on quote characters being present.
+    #[must_use]
+    fn is_string_literal(value: &str) -> bool {
+        !Self::is_numeric(value) && !Self::is_bool_or_null(value)
+    }
+
+    /// Return whether a token can start an identifier reference or function call.
+    #[must_use]
+    fn is_ident_like_token(token_type: &TokenType) -> bool {
+        matches!(token_type, TokenType::Identifier(_) | TokenType::Type)
     }
 
     /// Parse a numeric literal efficiently.
@@ -263,8 +286,8 @@ impl ExpressionParser {
         };
 
         match token.r#type() {
-            // String literals - fast path
-            TokenType::Literal(value) if value.starts_with('"') => {
+            // String literals
+            TokenType::Literal(value) if Self::is_string_literal(value) => {
                 Self::parse_string_literal(stream)
             }
 
@@ -274,9 +297,7 @@ impl ExpressionParser {
             }
 
             // Boolean and null literals (stored as TokenType::Literal)
-            TokenType::Literal(value)
-                if matches!(value.as_str(), "true" | "false" | "null") =>
-            {
+            TokenType::Literal(value) if Self::is_bool_or_null(value) => {
                 Self::parse_bool_or_null_literal(stream)
             }
 
@@ -291,8 +312,33 @@ impl ExpressionParser {
                 self.parse_parenthesized_expr(stream, options)
             }
 
+            // Empty-array literal represented by the scanner as a single `[]` token
+            TokenType::List => {
+                if let Some(token) = stream.next() {
+                    ParseResult::success(Expr::Array(ArrayExpr {
+                        elements: Vec::new(),
+                        span: token.span().clone(),
+                    }))
+                } else {
+                    ParseResult::error(Diagnostic::error(
+                        SymbolSpan {
+                            start:
+                                crate::core::scanner::tokens::SymbolLocation {
+                                    line: 1,
+                                    column: 1,
+                                },
+                            end: crate::core::scanner::tokens::SymbolLocation {
+                                line: 1,
+                                column: 1,
+                            },
+                        },
+                        "Unexpected end of input, expected list literal",
+                    ))
+                }
+            }
+
             // Identifiers - could be simple references or function calls
-            TokenType::Identifier(_) => {
+            token_type if Self::is_ident_like_token(token_type) => {
                 self.parse_ident_or_func_call(stream, options)
             }
 
@@ -303,153 +349,57 @@ impl ExpressionParser {
         }
     }
 
-    /// Parse function arguments efficiently.
-    fn parse_function_args(
-        &mut self,
-        stream: &mut dyn TokenStream,
-        options: &ParserOptions,
-    ) -> ParseResult<Option<crate::core::parser::ast::ArgList>> {
-        // Parse arguments efficiently - preallocate for common case
-        let mut args = Vec::with_capacity(4);
-
-        // Parse argument list
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
-            if matches!(token.r#type(), TokenType::RightParen) {
-                break;
-            }
-
-            if !args.is_empty() {
-                // Expect comma between arguments
-                if !matches!(token.r#type(), TokenType::Comma) {
-                    return ParseResult::error(Diagnostic::error(
-                        token.span().clone(),
-                        "Expected ',' between function arguments",
-                    ));
-                }
-                stream.next(); // consume comma
-
-                // Check for trailing comma
-                if let Some(next_token) = stream.peek()
-                    && matches!(next_token.r#type(), TokenType::RightParen)
-                {
-                    break;
-                }
-            }
-
-            // Parse the argument expression
-            match self.parse(stream, options) {
-                ParseResult {
-                    value: Some(expr),
-                    diagnostics: _arg_diags,
-                } => {
-                    args.push(crate::core::parser::ast::Arg::Positional(
-                        crate::core::parser::ast::PositionalArg {
-                            span: expr.span().clone(),
-                            value: expr,
-                        },
-                    ));
-                }
-                ParseResult {
-                    value: None,
-                    diagnostics: _arg_diags,
-                } => {
-                    return ParseResult::error(Diagnostic::error(
-                        stream.peek().map_or_else(
-                            || SymbolSpan {
-                                start: crate::core::scanner::tokens::SymbolLocation { line: 1, column: 1 },
-                                end: crate::core::scanner::tokens::SymbolLocation { line: 1, column: 1 },
-                            },
-                            |t| t.span().clone()
-                        ),
-                        "Expected expression in function argument",
-                    ));
-                }
-            }
-        }
-
-        if args.is_empty() {
-            ParseResult::success(None)
-        } else {
-            // Create span from first to last arg
-            let start_span = args[0].span().start.clone();
-            let end_span = args[args.len() - 1].span().end.clone();
-            ParseResult::success(Some(crate::core::parser::ast::ArgList {
-                items: args,
-                span: SymbolSpan {
-                    start: start_span,
-                    end: end_span,
-                },
-            }))
-        }
-    }
-
     fn parse_func_call(
-        &mut self,
         stream: &mut dyn TokenStream,
         options: &ParserOptions,
         name: crate::core::parser::ast::QualifiedIdent,
         start_span: crate::core::scanner::tokens::SymbolLocation,
-        diagnostics: Vec<Diagnostic>,
+        mut diagnostics: Vec<Diagnostic>,
     ) -> ParseResult<Expr> {
-        // Parse as function call
-        stream.next(); // consume '('
-
-        let args_result = self.parse_function_args(stream, options);
-
-        // Expect closing parenthesis
-        match stream.peek() {
-            Some(token) if matches!(token.r#type(), TokenType::RightParen) => {
-                if let Some(close_token) = stream.next() {
-                    let end_span = close_token.span().end.clone();
-
-                    let func_span = SymbolSpan {
-                        start: start_span,
-                        end: end_span,
-                    };
-                    let arg_list = match args_result {
-                        ParseResult {
-                            value: Some(args),
-                            diagnostics: _,
-                        } => args,
-                        ParseResult {
-                            value: None,
-                            diagnostics: _,
-                        } => None,
-                    };
-
-                    let mut result =
-                        ParseResult::success(Expr::FuncCall(FuncCall {
-                            callee: name,
-                            args: arg_list,
-                            span: func_span,
-                        }));
-                    result.diagnostics = diagnostics;
-                    result
+        let mut arg_list_parser = ArgListParser::new();
+        match arg_list_parser.parse(stream, options) {
+            ParseResult {
+                value: Some(args),
+                diagnostics: mut arg_diags,
+            } => {
+                let func_span = SymbolSpan {
+                    start: start_span,
+                    end: args.span.end.clone(),
+                };
+                let arg_list = if args.items.is_empty() {
+                    None
                 } else {
-                    ParseResult::error(Diagnostic::error(
-                        SymbolSpan {
+                    Some(args)
+                };
+
+                diagnostics.append(&mut arg_diags);
+                let mut result =
+                    ParseResult::success(Expr::FuncCall(FuncCall {
+                        callee: name,
+                        args: arg_list,
+                        span: func_span,
+                    }));
+                result.diagnostics = diagnostics;
+                result
+            }
+            ParseResult {
+                value: None,
+                diagnostics: mut arg_diags,
+            } => {
+                diagnostics.append(&mut arg_diags);
+                let mut result = ParseResult::error(Diagnostic::error(
+                    stream.peek().map_or_else(
+                        || SymbolSpan {
                             start: start_span.clone(),
                             end: start_span,
                         },
-                        "Unexpected end of input, expected ')'",
-                    ))
-                }
+                        |t| t.span().clone(),
+                    ),
+                    "Failed to parse function arguments",
+                ));
+                result.diagnostics = diagnostics;
+                result
             }
-            Some(token) => ParseResult::error(Diagnostic::error(
-                token.span().clone(),
-                "Expected ')' after function arguments",
-            )),
-            None => ParseResult::error(Diagnostic::error(
-                SymbolSpan {
-                    start: start_span.clone(),
-                    end: start_span,
-                },
-                "Unexpected end of input, expected ')'",
-            )),
         }
     }
 
@@ -471,7 +421,7 @@ impl ExpressionParser {
                 if let Some(token) = stream.peek()
                     && matches!(token.r#type(), TokenType::LeftParen)
                 {
-                    self.parse_func_call(
+                    Self::parse_func_call(
                         stream,
                         options,
                         name,
@@ -673,20 +623,19 @@ impl ExpressionParser {
         stream: &mut dyn TokenStream,
     ) -> ParseResult<ObjectKey> {
         match stream.peek() {
-            Some(token)
-                if matches!(token.r#type(), TokenType::Identifier(_)) =>
-            {
+            Some(token) if Self::is_ident_like_token(token.r#type()) => {
                 if let Some(token) = stream.next() {
-                    if let TokenType::Identifier(text) = token.r#type() {
-                        ParseResult::success(ObjectKey::Ident(
-                            crate::core::parser::ast::Ident {
-                                text: text.clone(),
-                                span: token.span().clone(),
-                            },
-                        ))
-                    } else {
-                        unreachable!("Token type was checked")
-                    }
+                    let text = match token.r#type() {
+                        TokenType::Identifier(text) => text.clone(),
+                        TokenType::Type => "type".to_string(),
+                        _ => unreachable!("Token type was checked"),
+                    };
+                    ParseResult::success(ObjectKey::Ident(
+                        crate::core::parser::ast::Ident {
+                            text,
+                            span: token.span().clone(),
+                        },
+                    ))
                 } else {
                     ParseResult::error(Diagnostic::error(
                         SymbolSpan {
@@ -704,7 +653,7 @@ impl ExpressionParser {
                     ))
                 }
             }
-            Some(token) if matches!(token.r#type(), TokenType::Literal(value) if value.starts_with('"')) => {
+            Some(token) if matches!(token.r#type(), TokenType::Literal(value) if Self::is_string_literal(value)) => {
                 if let Some(token) = stream.next() {
                     if let TokenType::Literal(value) = token.r#type() {
                         let unquoted = if value.len() >= 2
@@ -981,10 +930,54 @@ impl ExpressionParser {
     /// Fast numeric detection without regex.
     #[must_use]
     pub fn is_numeric(value: &str) -> bool {
-        !value.is_empty()
-            && (value.chars().all(|c| c.is_ascii_digit())
-                || (value.contains('.')
-                    && value.chars().all(|c| c.is_ascii_digit() || c == '.')))
+        if value.is_empty() {
+            return false;
+        }
+
+        let bytes = value.as_bytes();
+        let mut idx = 0usize;
+
+        if bytes[idx] == b'-' {
+            idx += 1;
+            if idx == bytes.len() {
+                return false;
+            }
+        }
+
+        let int_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == int_start {
+            return false;
+        }
+
+        if idx < bytes.len() && bytes[idx] == b'.' {
+            idx += 1;
+            let frac_start = idx;
+            while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            if idx == frac_start {
+                return false;
+            }
+        }
+
+        if idx < bytes.len() && matches!(bytes[idx], b'e' | b'E') {
+            idx += 1;
+            if idx < bytes.len() && matches!(bytes[idx], b'+' | b'-') {
+                idx += 1;
+            }
+            let exp_start = idx;
+            while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            if idx == exp_start {
+                return false;
+            }
+        }
+
+        idx == bytes.len()
     }
 }
 
@@ -1004,6 +997,8 @@ impl Parser<Expr> for ExpressionParser {
             Some(
                 TokenType::Literal(_)
                     | TokenType::Identifier(_)
+                    | TokenType::Type
+                    | TokenType::List
                     | TokenType::LeftBracket
                     | TokenType::LeftBrace
                     | TokenType::LeftParen
@@ -1058,6 +1053,24 @@ mod tests {
     }
 
     #[test]
+    fn scanner_style_string_literal_without_quotes() {
+        let tokens =
+            vec![create_test_token(TokenType::Literal("hello".to_string()))];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        if let Some(Expr::StringLit(lit)) = result.value {
+            assert_eq!(lit.value, "hello");
+        } else {
+            panic!("Expected string literal");
+        }
+    }
+
+    #[test]
     fn integer_literal() {
         let tokens =
             vec![create_test_token(TokenType::Literal("42".to_string()))];
@@ -1076,6 +1089,20 @@ mod tests {
     }
 
     #[test]
+    fn signed_integer_literal_is_not_classified_as_string() {
+        let tokens =
+            vec![create_test_token(TokenType::Literal("-1".to_string()))];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(matches!(result.value, Some(Expr::IntLit(_))));
+    }
+
+    #[test]
     fn float_literal() {
         let tokens =
             vec![create_test_token(TokenType::Literal("3.14".to_string()))];
@@ -1091,6 +1118,20 @@ mod tests {
         } else {
             panic!("Expected float literal");
         }
+    }
+
+    #[test]
+    fn scientific_literal_is_not_classified_as_string() {
+        let tokens =
+            vec![create_test_token(TokenType::Literal("1e10".to_string()))];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(matches!(result.value, Some(Expr::IntLit(_))));
     }
 
     #[test]
@@ -1264,6 +1305,32 @@ mod tests {
     }
 
     #[test]
+    fn function_call_with_named_args() {
+        let tokens = vec![
+            create_test_token(TokenType::Identifier("createdAt".to_string())),
+            create_test_token(TokenType::LeftParen),
+            create_test_token(TokenType::Identifier("sort".to_string())),
+            create_test_token(TokenType::Colon),
+            create_test_token(TokenType::Identifier("Desc".to_string())),
+            create_test_token(TokenType::RightParen),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        if let Some(Expr::FuncCall(call)) = result.value {
+            assert_eq!(call.callee.parts[0].text, "createdAt");
+            assert!(call.args.is_some());
+            assert_eq!(call.args.as_ref().unwrap().items.len(), 1);
+        } else {
+            panic!("Expected function call with named arguments");
+        }
+    }
+
+    #[test]
     fn empty_array() {
         let tokens = vec![
             create_test_token(TokenType::LeftBracket),
@@ -1350,6 +1417,33 @@ mod tests {
     }
 
     #[test]
+    fn object_with_scanner_style_string_key() {
+        let tokens = vec![
+            create_test_token(TokenType::LeftBrace),
+            create_test_token(TokenType::Literal("key".to_string())),
+            create_test_token(TokenType::Colon),
+            create_test_token(TokenType::Literal("1".to_string())),
+            create_test_token(TokenType::RightBrace),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        if let Some(Expr::Object(obj)) = result.value {
+            assert_eq!(obj.entries.len(), 1);
+            assert!(matches!(
+                obj.entries[0].key,
+                crate::core::parser::ast::ObjectKey::String(_)
+            ));
+        } else {
+            panic!("Expected object expression");
+        }
+    }
+
+    #[test]
     fn can_parse() {
         let parser = ExpressionParser::new();
 
@@ -1427,8 +1521,15 @@ mod tests {
         assert!(ExpressionParser::is_numeric("42"));
         assert!(ExpressionParser::is_numeric("3.14"));
         assert!(ExpressionParser::is_numeric("0"));
+        assert!(ExpressionParser::is_numeric("-1"));
+        assert!(ExpressionParser::is_numeric("1e10"));
+        assert!(ExpressionParser::is_numeric("-1e10"));
+        assert!(ExpressionParser::is_numeric("1.0e+10"));
         assert!(!ExpressionParser::is_numeric("hello"));
         assert!(!ExpressionParser::is_numeric(""));
+        assert!(!ExpressionParser::is_numeric("1."));
+        assert!(!ExpressionParser::is_numeric("1e"));
+        assert!(!ExpressionParser::is_numeric("-"));
         assert!(!ExpressionParser::is_numeric("42a"));
     }
 

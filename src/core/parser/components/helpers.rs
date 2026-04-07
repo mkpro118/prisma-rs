@@ -32,9 +32,9 @@ pub(crate) fn span_from_to(a: &SymbolSpan, b: &SymbolSpan) -> SymbolSpan {
 pub fn extract_doc_text(token: &Token) -> Option<String> {
     if let TokenType::DocComment(text) = token.r#type() {
         if let Some(rest) = text.strip_prefix(' ') {
-            Some(rest.to_string())
+            Some(rest.to_owned())
         } else {
-            Some(text.to_string())
+            Some(text.clone())
         }
     } else {
         None
