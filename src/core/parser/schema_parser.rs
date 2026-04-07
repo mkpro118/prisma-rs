@@ -462,10 +462,7 @@ impl DefaultSchemaParser {
                 TokenType::Model
                 | TokenType::Enum
                 | TokenType::DataSource
-                | TokenType::Generator
-                | TokenType::Type
-                    if !in_block =>
-                {
+                | TokenType::Generator => {
                     if in_block && !current.is_empty() {
                         blocks.push(Block {
                             index: next_index,
@@ -477,6 +474,27 @@ impl DefaultSchemaParser {
                     in_block = true;
                     brace_depth = 0;
                     // Prepend any pending docs to the new block
+                    if !pending_docs.is_empty() {
+                        current.append(&mut pending_docs);
+                    }
+                    current.push(token.clone());
+                }
+                TokenType::Type
+                    if !in_block
+                        || Self::is_top_level_type_decl_start(
+                            stream, offset,
+                        ) =>
+                {
+                    if in_block && !current.is_empty() {
+                        blocks.push(Block {
+                            index: next_index,
+                            tokens: current,
+                        });
+                        next_index += 1;
+                        current = Vec::new();
+                    }
+                    in_block = true;
+                    brace_depth = 0;
                     if !pending_docs.is_empty() {
                         current.append(&mut pending_docs);
                     }
@@ -521,6 +539,43 @@ impl DefaultSchemaParser {
         }
 
         blocks
+    }
+
+    fn is_top_level_type_decl_start(
+        stream: &dyn TokenStream,
+        offset: usize,
+    ) -> bool {
+        matches!(
+            Self::peek_ahead_non_comment(stream, offset + 1, 0)
+                .map(Token::r#type),
+            Some(TokenType::Identifier(_))
+        ) && matches!(
+            Self::peek_ahead_non_comment(stream, offset + 1, 1)
+                .map(Token::r#type),
+            Some(TokenType::Assign)
+        )
+    }
+
+    fn peek_ahead_non_comment<'a>(
+        stream: &'a dyn TokenStream,
+        mut raw_offset: usize,
+        mut target_offset: usize,
+    ) -> Option<&'a Token> {
+        while let Some(token) = stream.peek_ahead(raw_offset) {
+            match token.r#type() {
+                TokenType::Comment(_) | TokenType::DocComment(_) => {
+                    raw_offset += 1;
+                }
+                _ => {
+                    if target_offset == 0 {
+                        return Some(token);
+                    }
+                    target_offset -= 1;
+                    raw_offset += 1;
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1099,6 +1154,50 @@ mod tests {
         assert!(matches!(schema.declarations[0], Declaration::Model(_)));
         assert!(matches!(schema.declarations[1], Declaration::Enum(_)));
         assert!(res.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn identify_blocks_keeps_type_field_inside_model_block() {
+        let toks = vec![
+            t(TokenType::Model),
+            ident("AvailabilityOverride"),
+            t(TokenType::LeftBrace),
+            t(TokenType::Type),
+            ident("AvailabilityOverrideType"),
+            t(TokenType::RightBrace),
+            t(TokenType::EOF),
+        ];
+        let stream = VectorTokenStream::new(toks);
+
+        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
+    }
+
+    #[test]
+    fn identify_blocks_recovers_when_new_declaration_starts_mid_block() {
+        let toks = vec![
+            t(TokenType::Model),
+            ident("Broken"),
+            t(TokenType::LeftBrace),
+            ident("id"),
+            t(TokenType::Int),
+            t(TokenType::Model),
+            ident("Recovered"),
+            t(TokenType::LeftBrace),
+            t(TokenType::RightBrace),
+            t(TokenType::EOF),
+        ];
+        let stream = VectorTokenStream::new(toks);
+
+        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
+        assert!(matches!(blocks[1].tokens[0].r#type(), TokenType::Model));
+        assert!(matches!(
+            blocks[1].tokens[1].r#type(),
+            TokenType::Identifier(name) if name == "Recovered"
+        ));
     }
 
     #[test]
