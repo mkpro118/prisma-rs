@@ -314,13 +314,27 @@ impl ExpressionParser {
 
             // Empty-array literal represented by the scanner as a single `[]` token
             TokenType::List => {
-                let token = stream
-                    .next()
-                    .expect("peek returned Some but next returned None");
-                ParseResult::success(Expr::Array(ArrayExpr {
-                    elements: Vec::new(),
-                    span: token.span().clone(),
-                }))
+                if let Some(token) = stream.next() {
+                    ParseResult::success(Expr::Array(ArrayExpr {
+                        elements: Vec::new(),
+                        span: token.span().clone(),
+                    }))
+                } else {
+                    ParseResult::error(Diagnostic::error(
+                        SymbolSpan {
+                            start:
+                                crate::core::scanner::tokens::SymbolLocation {
+                                    line: 1,
+                                    column: 1,
+                                },
+                            end: crate::core::scanner::tokens::SymbolLocation {
+                                line: 1,
+                                column: 1,
+                            },
+                        },
+                        "Unexpected end of input, expected list literal",
+                    ))
+                }
             }
 
             // Identifiers - could be simple references or function calls
@@ -336,7 +350,6 @@ impl ExpressionParser {
     }
 
     fn parse_func_call(
-        &mut self,
         stream: &mut dyn TokenStream,
         options: &ParserOptions,
         name: crate::core::parser::ast::QualifiedIdent,
@@ -408,7 +421,7 @@ impl ExpressionParser {
                 if let Some(token) = stream.peek()
                     && matches!(token.r#type(), TokenType::LeftParen)
                 {
-                    self.parse_func_call(
+                    Self::parse_func_call(
                         stream,
                         options,
                         name,

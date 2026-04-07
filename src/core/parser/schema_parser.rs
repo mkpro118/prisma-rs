@@ -556,11 +556,11 @@ impl DefaultSchemaParser {
         )
     }
 
-    fn peek_ahead_non_comment<'a>(
-        stream: &'a dyn TokenStream,
+    fn peek_ahead_non_comment(
+        stream: &dyn TokenStream,
         mut raw_offset: usize,
         mut target_offset: usize,
-    ) -> Option<&'a Token> {
+    ) -> Option<&Token> {
         while let Some(token) = stream.peek_ahead(raw_offset) {
             match token.r#type() {
                 TokenType::Comment(_) | TokenType::DocComment(_) => {
