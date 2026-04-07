@@ -917,10 +917,54 @@ impl ExpressionParser {
     /// Fast numeric detection without regex.
     #[must_use]
     pub fn is_numeric(value: &str) -> bool {
-        !value.is_empty()
-            && (value.chars().all(|c| c.is_ascii_digit())
-                || (value.contains('.')
-                    && value.chars().all(|c| c.is_ascii_digit() || c == '.')))
+        if value.is_empty() {
+            return false;
+        }
+
+        let bytes = value.as_bytes();
+        let mut idx = 0usize;
+
+        if bytes[idx] == b'-' {
+            idx += 1;
+            if idx == bytes.len() {
+                return false;
+            }
+        }
+
+        let int_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == int_start {
+            return false;
+        }
+
+        if idx < bytes.len() && bytes[idx] == b'.' {
+            idx += 1;
+            let frac_start = idx;
+            while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            if idx == frac_start {
+                return false;
+            }
+        }
+
+        if idx < bytes.len() && matches!(bytes[idx], b'e' | b'E') {
+            idx += 1;
+            if idx < bytes.len() && matches!(bytes[idx], b'+' | b'-') {
+                idx += 1;
+            }
+            let exp_start = idx;
+            while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            if idx == exp_start {
+                return false;
+            }
+        }
+
+        idx == bytes.len()
     }
 }
 
@@ -1032,6 +1076,20 @@ mod tests {
     }
 
     #[test]
+    fn signed_integer_literal_is_not_classified_as_string() {
+        let tokens =
+            vec![create_test_token(TokenType::Literal("-1".to_string()))];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(matches!(result.value, Some(Expr::IntLit(_))));
+    }
+
+    #[test]
     fn float_literal() {
         let tokens =
             vec![create_test_token(TokenType::Literal("3.14".to_string()))];
@@ -1047,6 +1105,20 @@ mod tests {
         } else {
             panic!("Expected float literal");
         }
+    }
+
+    #[test]
+    fn scientific_literal_is_not_classified_as_string() {
+        let tokens =
+            vec![create_test_token(TokenType::Literal("1e10".to_string()))];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = ExpressionParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(matches!(result.value, Some(Expr::IntLit(_))));
     }
 
     #[test]
@@ -1436,8 +1508,15 @@ mod tests {
         assert!(ExpressionParser::is_numeric("42"));
         assert!(ExpressionParser::is_numeric("3.14"));
         assert!(ExpressionParser::is_numeric("0"));
+        assert!(ExpressionParser::is_numeric("-1"));
+        assert!(ExpressionParser::is_numeric("1e10"));
+        assert!(ExpressionParser::is_numeric("-1e10"));
+        assert!(ExpressionParser::is_numeric("1.0e+10"));
         assert!(!ExpressionParser::is_numeric("hello"));
         assert!(!ExpressionParser::is_numeric(""));
+        assert!(!ExpressionParser::is_numeric("1."));
+        assert!(!ExpressionParser::is_numeric("1e"));
+        assert!(!ExpressionParser::is_numeric("-"));
         assert!(!ExpressionParser::is_numeric("42a"));
     }
 
