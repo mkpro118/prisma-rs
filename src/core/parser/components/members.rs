@@ -37,6 +37,10 @@ fn ident_from_token(tok: &Token) -> Option<Ident> {
             text: s.clone(),
             span: tspan(tok),
         }),
+        TokenType::Type => Some(Ident {
+            text: "type".to_string(),
+            span: tspan(tok),
+        }),
         _ => None,
     }
 }
@@ -157,7 +161,7 @@ impl Parser<Assignment> for AssignmentParser {
         if let (Some(cur), Some(next)) =
             (stream.peek_non_comment(), stream.peek_ahead_non_comment(1))
         {
-            matches!(cur.r#type(), TokenType::Identifier(_))
+            matches!(cur.r#type(), TokenType::Identifier(_) | TokenType::Type)
                 && matches!(next.r#type(), TokenType::Assign)
         } else {
             false
@@ -248,9 +252,9 @@ impl Parser<EnumValue> for EnumValueParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        stream
-            .peek_non_comment()
-            .is_some_and(|t| matches!(t.r#type(), TokenType::Identifier(_)))
+        stream.peek_non_comment().is_some_and(|t| {
+            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::Type)
+        })
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
@@ -431,9 +435,9 @@ impl Parser<FieldDecl> for FieldDeclParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        stream
-            .peek_non_comment()
-            .is_some_and(|t| matches!(t.r#type(), TokenType::Identifier(_)))
+        stream.peek_non_comment().is_some_and(|t| {
+            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::Type)
+        })
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
@@ -508,7 +512,12 @@ impl Parser<ModelMember> for ModelMemberParser {
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
         if let Some(t) = stream.peek_non_comment() {
-            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::DoubleAt)
+            matches!(
+                t.r#type(),
+                TokenType::Identifier(_)
+                    | TokenType::Type
+                    | TokenType::DoubleAt
+            )
         } else {
             false
         }
@@ -588,7 +597,12 @@ impl Parser<EnumMember> for EnumMemberParser {
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
         if let Some(t) = stream.peek_non_comment() {
-            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::DoubleAt)
+            matches!(
+                t.r#type(),
+                TokenType::Identifier(_)
+                    | TokenType::Type
+                    | TokenType::DoubleAt
+            )
         } else {
             false
         }

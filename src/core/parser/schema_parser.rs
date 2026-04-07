@@ -463,7 +463,9 @@ impl DefaultSchemaParser {
                 | TokenType::Enum
                 | TokenType::DataSource
                 | TokenType::Generator
-                | TokenType::Type => {
+                | TokenType::Type
+                    if !in_block =>
+                {
                     if in_block && !current.is_empty() {
                         blocks.push(Block {
                             index: next_index,

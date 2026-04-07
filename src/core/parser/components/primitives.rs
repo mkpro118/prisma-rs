@@ -46,6 +46,17 @@ use crate::core::parser::{
 };
 use crate::core::scanner::tokens::{SymbolSpan, TokenType};
 
+/// Return identifier text for tokens that are valid in identifier position.
+fn identifier_text(token_type: &TokenType) -> Option<&str> {
+    match token_type {
+        TokenType::Identifier(text) => Some(text),
+        // `type` is a contextual keyword in Prisma and can still appear
+        // in identifier-like positions such as field names and references.
+        TokenType::Type => Some("type"),
+        _ => None,
+    }
+}
+
 /// Parse a single identifier into an `Ident` AST node.
 ///
 /// Returns the identifier text and its span. `can_parse` ignores leading
@@ -89,13 +100,11 @@ impl Parser<Ident> for IdentParser {
         _options: &ParserOptions,
     ) -> ParseResult<Ident> {
         match stream.peek() {
-            Some(token)
-                if matches!(token.r#type(), TokenType::Identifier(_)) =>
-            {
+            Some(token) if identifier_text(token.r#type()).is_some() => {
                 if let Some(token) = stream.next() {
-                    if let TokenType::Identifier(text) = token.r#type() {
+                    if let Some(text) = identifier_text(token.r#type()) {
                         ParseResult::success(Ident {
-                            text: text.clone(),
+                            text: text.to_string(),
                             span: token.span().clone(),
                         })
                     } else {
@@ -130,12 +139,10 @@ impl Parser<Ident> for IdentParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        matches!(
-            stream
-                .peek_non_comment()
-                .map(crate::core::scanner::tokens::Token::r#type),
-            Some(TokenType::Identifier(_))
-        )
+        stream
+            .peek_non_comment()
+            .map(crate::core::scanner::tokens::Token::r#type)
+            .is_some_and(|token_type| identifier_text(token_type).is_some())
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
