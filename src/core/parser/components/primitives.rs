@@ -57,6 +57,36 @@ fn identifier_text(token_type: &TokenType) -> Option<&str> {
     }
 }
 
+/// Return the canonical spelling for a reserved scalar-type keyword token.
+///
+/// The scanner tokenizes the built-in scalar types as dedicated keyword
+/// tokens. Those spellings are also valid namespaced native-type names in a
+/// qualified identifier (e.g. `db.Decimal`, `db.Json`), where the segment
+/// after the dot lives in the datasource namespace rather than the scalar
+/// namespace. This mapping lets such segments be read as identifiers.
+fn keyword_as_ident_text(token_type: &TokenType) -> Option<&'static str> {
+    match token_type {
+        TokenType::String => Some("String"),
+        TokenType::Int => Some("Int"),
+        TokenType::Float => Some("Float"),
+        TokenType::Boolean => Some("Boolean"),
+        TokenType::DateTime => Some("DateTime"),
+        TokenType::Json => Some("Json"),
+        TokenType::Bytes => Some("Bytes"),
+        TokenType::Decimal => Some("Decimal"),
+        _ => None,
+    }
+}
+
+/// Return identifier text for a segment following a dot in a qualified name.
+///
+/// Accepts ordinary identifiers, the contextual `type` keyword, and reserved
+/// scalar-type keywords so native-type attribute names such as `db.Decimal`
+/// parse as qualified identifiers.
+fn qualified_part_text(token_type: &TokenType) -> Option<&str> {
+    identifier_text(token_type).or_else(|| keyword_as_ident_text(token_type))
+}
+
 /// Parse a single identifier into an `Ident` AST node.
 ///
 /// Returns the identifier text and its span. `can_parse` ignores leading
@@ -213,27 +243,36 @@ impl Parser<QualifiedIdent> for QualifiedIdentParser {
                 parts.push(ident);
                 result_diagnostics.extend(diagnostics);
 
-                // Parse additional dotted parts
+                // Parse additional dotted parts. Segments after a dot may be
+                // ordinary identifiers or reserved scalar-type keywords (e.g.
+                // `db.Decimal`), since they name namespaced native types.
                 while let Some(token) = stream.peek()
                     && matches!(token.r#type(), TokenType::Dot)
                 {
                     // Consume the dot
                     stream.next();
 
-                    // Parse the next identifier
-                    match self.ident_parser.parse(stream, options) {
-                        ParseResult {
-                            value: Some(ident),
-                            diagnostics,
-                        } => {
-                            parts.push(ident);
-                            result_diagnostics.extend(diagnostics);
+                    // Parse the next segment
+                    match stream.peek() {
+                        Some(token)
+                            if qualified_part_text(token.r#type())
+                                .is_some() =>
+                        {
+                            if let Some(token) = stream.next()
+                                && let Some(text) =
+                                    qualified_part_text(token.r#type())
+                            {
+                                parts.push(Ident {
+                                    text: text.to_string(),
+                                    span: token.span().clone(),
+                                });
+                            } else {
+                                unreachable!(
+                                    "Segment token was checked by peek above"
+                                );
+                            }
                         }
-                        ParseResult {
-                            value: None,
-                            diagnostics,
-                        } => {
-                            result_diagnostics.extend(diagnostics);
+                        _ => {
                             // Create error result with collected diagnostics
                             let mut result = ParseResult::error(
                                 Diagnostic::error(
@@ -400,6 +439,50 @@ mod tests {
         assert_eq!(qualified.parts[0].text, "db");
         assert_eq!(qualified.parts[1].text, "VarChar");
         assert!(!qualified.is_simple());
+    }
+
+    #[test]
+    fn qualified_ident_scalar_keyword_segment() {
+        // Native-type attribute name `db.Decimal`: the segment after the dot
+        // is a reserved scalar keyword token and must be accepted.
+        let tokens = vec![
+            create_test_token(TokenType::Identifier("db".to_string())),
+            create_test_token(TokenType::Dot),
+            create_test_token(TokenType::Decimal),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = QualifiedIdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(result.diagnostics.is_empty());
+        let qualified = result.value.unwrap();
+        assert_eq!(qualified.parts.len(), 2);
+        assert_eq!(qualified.parts[0].text, "db");
+        assert_eq!(qualified.parts[1].text, "Decimal");
+        assert!(!qualified.is_simple());
+    }
+
+    #[test]
+    fn qualified_ident_scalar_keyword_segment_json() {
+        let tokens = vec![
+            create_test_token(TokenType::Identifier("db".to_string())),
+            create_test_token(TokenType::Dot),
+            create_test_token(TokenType::Json),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = QualifiedIdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(result.diagnostics.is_empty());
+        let qualified = result.value.unwrap();
+        assert_eq!(qualified.parts.len(), 2);
+        assert_eq!(qualified.parts[1].text, "Json");
     }
 
     #[test]
