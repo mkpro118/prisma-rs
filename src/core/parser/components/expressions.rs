@@ -479,11 +479,7 @@ impl ExpressionParser {
     ) -> ParseResult<Vec<Expr>> {
         let mut elements = Vec::with_capacity(8);
 
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
+        while let Some(token) = stream.peek() {
             if matches!(token.r#type(), TokenType::RightBracket) {
                 break;
             }
@@ -797,11 +793,7 @@ impl ExpressionParser {
     ) -> ParseResult<Vec<ObjectEntry>> {
         let mut entries = Vec::with_capacity(4);
 
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
+        while let Some(token) = stream.peek() {
             if matches!(token.r#type(), TokenType::RightBrace) {
                 break;
             }

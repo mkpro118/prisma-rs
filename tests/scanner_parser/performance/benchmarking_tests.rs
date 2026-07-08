@@ -256,7 +256,7 @@ fn performance_consistency() {
     // Calculate simple dispersion: max/min around integer average
     let sum: u128 = times.iter().copied().sum();
     let n = times.len() as u128;
-    let avg: u128 = if n > 0 { sum / n } else { 0 };
+    let avg: u128 = sum.checked_div(n).unwrap_or(0);
     let min = *times.iter().min().expect("times non-empty");
     let max = *times.iter().max().expect("times non-empty");
     let max_dev = max.saturating_sub(avg);

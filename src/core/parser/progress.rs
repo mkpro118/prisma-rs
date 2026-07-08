@@ -308,7 +308,7 @@ mod tests {
             }
         }
         fn allow_continue(&self, _parser_id: usize) -> bool {
-            self.cont.lock().map(|g| *g).unwrap_or(true)
+            self.cont.lock().map_or(true, |g| *g)
         }
         fn max_duration(&self) -> Duration {
             self.tuning.max_parse_time

@@ -212,8 +212,7 @@ impl DefaultSchemaParser {
         if blocks.is_empty()
             && stream
                 .peek()
-                .filter(|tok| !matches!(tok.r#type(), TokenType::EOF))
-                .is_some()
+                .is_some_and(|tok| !matches!(tok.r#type(), TokenType::EOF))
         {
             let mut result = ParseResult::success(Schema {
                 declarations: Vec::new(),
