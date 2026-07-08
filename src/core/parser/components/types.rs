@@ -529,8 +529,9 @@ mod tests {
         let stream = VectorTokenStream::new(tokens);
         assert!(parser.can_parse(&stream));
 
-        // Test non-type tokens
-        let tokens = vec![create_test_token(TokenType::Model)];
+        // Test non-type tokens (`@` is never valid in type position;
+        // contextual keywords like `model` now are).
+        let tokens = vec![create_test_token(TokenType::At)];
         let stream = VectorTokenStream::new(tokens);
         assert!(!parser.can_parse(&stream));
     }
@@ -567,7 +568,7 @@ mod tests {
             create_test_token(TokenType::DocComment(
                 "/// doc comment".to_string(),
             )),
-            create_test_token(TokenType::Model),
+            create_test_token(TokenType::At),
         ];
         let stream = VectorTokenStream::new(tokens);
         assert!(!parser.can_parse(&stream));
@@ -575,7 +576,7 @@ mod tests {
 
     #[test]
     fn type_ref_error_handling() {
-        let tokens = vec![create_test_token(TokenType::Model)];
+        let tokens = vec![create_test_token(TokenType::At)];
         let mut stream = VectorTokenStream::new(tokens);
         let mut parser = TypeRefParser::new();
         let options = ParserOptions::default();

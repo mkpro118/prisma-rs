@@ -277,7 +277,7 @@ enum Status {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://localhost/test"  
+  url      = "postgresql://localhost/test"
 }
 
 generator client {
@@ -353,5 +353,108 @@ fn token_count_accuracy() {
     assert!(
         result.token_count < 20,
         "Should not have excessive tokens for simple input"
+    );
+}
+
+#[test]
+fn native_type_attribute_with_scalar_keyword_name() {
+    // `@db.Decimal(10, 2)` names a native type whose segment after the dot
+    // collides with the reserved `Decimal` scalar keyword. This must parse
+    // cleanly (regression for the Hipp schema diagnostics).
+    let input = r#"
+model Invoice {
+  amount Decimal @map("amount") @db.Decimal(10, 2)
+}
+"#;
+    let result = parse_schema_end_to_end(input);
+
+    assert!(
+        result.schema.is_some(),
+        "Model with @db.Decimal should parse successfully"
+    );
+    assert!(
+        result.diagnostics.is_empty(),
+        "@db.Decimal should produce no diagnostics, got: {:?}",
+        result.diagnostics
+    );
+
+    let schema = result.schema.unwrap();
+    let Some(Declaration::Model(model)) = schema.declarations.first() else {
+        panic!("Expected first declaration to be a model");
+    };
+    let Some(ModelMember::Field(field)) = model.members.first() else {
+        panic!("Expected first member to be a field");
+    };
+    assert_eq!(field.name.text, "amount");
+
+    // The field carries `@map` and `@db.Decimal(10, 2)`.
+    let db_attr = field
+        .attrs
+        .iter()
+        .find(|attr| {
+            attr.name.parts.len() == 2
+                && attr.name.parts[0].text == "db"
+                && attr.name.parts[1].text == "Decimal"
+        })
+        .expect("Expected a `@db.Decimal` attribute on the field");
+
+    let args = db_attr
+        .args
+        .as_ref()
+        .expect("Expected `@db.Decimal` to have an argument list");
+    assert_eq!(
+        args.items.len(),
+        2,
+        "Expected `@db.Decimal(10, 2)` to have two arguments"
+    );
+}
+
+#[test]
+fn contextual_keyword_as_field_name_and_reference() {
+    // `model` is a contextual keyword: it can name a field and be referenced
+    // in a block attribute. This mirrors the AuditLog model in the Hipp
+    // schema (regression for the remaining parse diagnostics).
+    let input = r#"
+model AuditLog {
+  id    Int    @id @default(autoincrement())
+  model String @map("model")
+
+  @@index([model])
+}
+"#;
+    let result = parse_schema_end_to_end(input);
+
+    assert!(
+        result.schema.is_some(),
+        "Model with a `model` field should parse successfully"
+    );
+    assert!(
+        result.diagnostics.is_empty(),
+        "A `model` field and `@@index([model])` should produce no \
+         diagnostics, got: {:?}",
+        result.diagnostics
+    );
+
+    let schema = result.schema.unwrap();
+    let Some(Declaration::Model(model)) = schema.declarations.first() else {
+        panic!("Expected first declaration to be a model");
+    };
+    assert_eq!(model.name.text, "AuditLog");
+
+    // A field is literally named `model`.
+    let has_model_field = model.members.iter().any(|member| {
+        matches!(member, ModelMember::Field(field) if field.name.text == "model")
+    });
+    assert!(has_model_field, "Expected a field named `model`");
+
+    // The `@@index([model])` block attribute is captured.
+    let index_attr = model
+        .attrs
+        .iter()
+        .find(|attr| attr.name.as_simple().is_some_and(|n| n.text == "index"))
+        .expect("Expected an `@@index` block attribute");
+    assert!(
+        index_attr.args.is_some(),
+        "Expected `@@index([model])` to carry an argument list"
     );
 }

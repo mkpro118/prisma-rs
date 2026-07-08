@@ -318,11 +318,7 @@ impl ArgListParser {
         let mut args = Vec::with_capacity(4); // Preallocate for common case
         let mut all_diagnostics = Vec::new();
 
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
+        while let Some(token) = stream.peek() {
             if matches!(token.r#type(), TokenType::RightParen) {
                 break;
             }

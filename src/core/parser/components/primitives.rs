@@ -47,14 +47,53 @@ use crate::core::parser::{
 use crate::core::scanner::tokens::{SymbolSpan, TokenType};
 
 /// Return identifier text for tokens that are valid in identifier position.
-fn identifier_text(token_type: &TokenType) -> Option<&str> {
+///
+/// `model`, `enum`, `datasource`, `generator`, and `type` are contextual
+/// keywords in Prisma: they introduce top-level blocks, but are also valid
+/// as field names, enum values, and references (e.g. a field literally named
+/// `model`, or `@@index([model])`). They are accepted here so those positions
+/// parse. Declaration names use a separate, stricter reader, so a model still
+/// cannot be *named* `model`.
+pub(crate) fn identifier_text(token_type: &TokenType) -> Option<&str> {
     match token_type {
         TokenType::Identifier(text) => Some(text),
-        // `type` is a contextual keyword in Prisma and can still appear
-        // in identifier-like positions such as field names and references.
         TokenType::Type => Some("type"),
+        TokenType::Model => Some("model"),
+        TokenType::Enum => Some("enum"),
+        TokenType::DataSource => Some("datasource"),
+        TokenType::Generator => Some("generator"),
         _ => None,
     }
+}
+
+/// Return the canonical spelling for a reserved scalar-type keyword token.
+///
+/// The scanner tokenizes the built-in scalar types as dedicated keyword
+/// tokens. Those spellings are also valid namespaced native-type names in a
+/// qualified identifier (e.g. `db.Decimal`, `db.Json`), where the segment
+/// after the dot lives in the datasource namespace rather than the scalar
+/// namespace. This mapping lets such segments be read as identifiers.
+fn keyword_as_ident_text(token_type: &TokenType) -> Option<&'static str> {
+    match token_type {
+        TokenType::String => Some("String"),
+        TokenType::Int => Some("Int"),
+        TokenType::Float => Some("Float"),
+        TokenType::Boolean => Some("Boolean"),
+        TokenType::DateTime => Some("DateTime"),
+        TokenType::Json => Some("Json"),
+        TokenType::Bytes => Some("Bytes"),
+        TokenType::Decimal => Some("Decimal"),
+        _ => None,
+    }
+}
+
+/// Return identifier text for a segment following a dot in a qualified name.
+///
+/// Accepts ordinary identifiers, contextual keywords, and reserved scalar-type
+/// keywords so native-type attribute names such as `db.Decimal` parse as
+/// qualified identifiers.
+fn qualified_part_text(token_type: &TokenType) -> Option<&str> {
+    identifier_text(token_type).or_else(|| keyword_as_ident_text(token_type))
 }
 
 /// Parse a single identifier into an `Ident` AST node.
@@ -213,27 +252,36 @@ impl Parser<QualifiedIdent> for QualifiedIdentParser {
                 parts.push(ident);
                 result_diagnostics.extend(diagnostics);
 
-                // Parse additional dotted parts
+                // Parse additional dotted parts. Segments after a dot may be
+                // ordinary identifiers or reserved scalar-type keywords (e.g.
+                // `db.Decimal`), since they name namespaced native types.
                 while let Some(token) = stream.peek()
                     && matches!(token.r#type(), TokenType::Dot)
                 {
                     // Consume the dot
                     stream.next();
 
-                    // Parse the next identifier
-                    match self.ident_parser.parse(stream, options) {
-                        ParseResult {
-                            value: Some(ident),
-                            diagnostics,
-                        } => {
-                            parts.push(ident);
-                            result_diagnostics.extend(diagnostics);
+                    // Parse the next segment
+                    match stream.peek() {
+                        Some(token)
+                            if qualified_part_text(token.r#type())
+                                .is_some() =>
+                        {
+                            if let Some(token) = stream.next()
+                                && let Some(text) =
+                                    qualified_part_text(token.r#type())
+                            {
+                                parts.push(Ident {
+                                    text: text.to_string(),
+                                    span: token.span().clone(),
+                                });
+                            } else {
+                                unreachable!(
+                                    "Segment token was checked by peek above"
+                                );
+                            }
                         }
-                        ParseResult {
-                            value: None,
-                            diagnostics,
-                        } => {
-                            result_diagnostics.extend(diagnostics);
+                        _ => {
                             // Create error result with collected diagnostics
                             let mut result = ParseResult::error(
                                 Diagnostic::error(
@@ -336,7 +384,9 @@ mod tests {
 
     #[test]
     fn ident_parser_wrong_token() {
-        let tokens = vec![create_test_token(TokenType::Model)];
+        // `Int` is a reserved scalar keyword, never valid in identifier
+        // position (unlike the contextual keywords `model`/`type`/...).
+        let tokens = vec![create_test_token(TokenType::Int)];
         let mut stream = VectorTokenStream::new(tokens);
         let mut parser = IdentParser::new();
         let options = ParserOptions::default();
@@ -357,10 +407,25 @@ mod tests {
 
         assert!(parser.can_parse(&stream));
 
-        let tokens = vec![create_test_token(TokenType::Model)];
+        let tokens = vec![create_test_token(TokenType::Int)];
         let stream = VectorTokenStream::new(tokens);
 
         assert!(!parser.can_parse(&stream));
+    }
+
+    #[test]
+    fn ident_parser_accepts_contextual_keyword_model() {
+        // `model` is a contextual keyword and is valid in identifier position
+        // (e.g. a field named `model`).
+        let tokens = vec![create_test_token(TokenType::Model)];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = IdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert_eq!(result.value.unwrap().text, "model");
     }
 
     #[test]
@@ -379,6 +444,22 @@ mod tests {
         assert_eq!(qualified.parts.len(), 1);
         assert_eq!(qualified.parts[0].text, "simple");
         assert!(qualified.is_simple());
+    }
+
+    #[test]
+    fn qualified_ident_contextual_keyword_reference() {
+        // A bare reference to a contextual keyword, e.g. `@@index([model])`.
+        let tokens = vec![create_test_token(TokenType::Model)];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = QualifiedIdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        let qualified = result.value.unwrap();
+        assert_eq!(qualified.parts.len(), 1);
+        assert_eq!(qualified.parts[0].text, "model");
     }
 
     #[test]
@@ -403,11 +484,55 @@ mod tests {
     }
 
     #[test]
+    fn qualified_ident_scalar_keyword_segment() {
+        // Native-type attribute name `db.Decimal`: the segment after the dot
+        // is a reserved scalar keyword token and must be accepted.
+        let tokens = vec![
+            create_test_token(TokenType::Identifier("db".to_string())),
+            create_test_token(TokenType::Dot),
+            create_test_token(TokenType::Decimal),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = QualifiedIdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(result.diagnostics.is_empty());
+        let qualified = result.value.unwrap();
+        assert_eq!(qualified.parts.len(), 2);
+        assert_eq!(qualified.parts[0].text, "db");
+        assert_eq!(qualified.parts[1].text, "Decimal");
+        assert!(!qualified.is_simple());
+    }
+
+    #[test]
+    fn qualified_ident_scalar_keyword_segment_json() {
+        let tokens = vec![
+            create_test_token(TokenType::Identifier("db".to_string())),
+            create_test_token(TokenType::Dot),
+            create_test_token(TokenType::Json),
+        ];
+        let mut stream = VectorTokenStream::new(tokens);
+        let mut parser = QualifiedIdentParser::new();
+        let options = ParserOptions::default();
+
+        let result = parser.parse(&mut stream, &options);
+
+        assert!(result.is_success());
+        assert!(result.diagnostics.is_empty());
+        let qualified = result.value.unwrap();
+        assert_eq!(qualified.parts.len(), 2);
+        assert_eq!(qualified.parts[1].text, "Json");
+    }
+
+    #[test]
     fn qualified_ident_incomplete_dot() {
         let tokens = vec![
             create_test_token(TokenType::Identifier("db".to_string())),
             create_test_token(TokenType::Dot),
-            create_test_token(TokenType::Model), // Wrong token after dot
+            create_test_token(TokenType::LeftBrace), // Wrong token after dot
         ];
         let mut stream = VectorTokenStream::new(tokens);
         let mut parser = QualifiedIdentParser::new();
@@ -451,7 +576,7 @@ mod tests {
 
         assert!(parser.can_parse(&stream));
 
-        let tokens = vec![create_test_token(TokenType::Model)];
+        let tokens = vec![create_test_token(TokenType::Int)];
         let stream = VectorTokenStream::new(tokens);
 
         assert!(!parser.can_parse(&stream));
@@ -473,7 +598,7 @@ mod tests {
 
         let tokens = vec![
             create_test_token(TokenType::Comment("// comment".to_string())),
-            create_test_token(TokenType::Model),
+            create_test_token(TokenType::Int),
         ];
         let stream = VectorTokenStream::new(tokens);
 

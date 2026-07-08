@@ -212,8 +212,7 @@ impl DefaultSchemaParser {
         if blocks.is_empty()
             && stream
                 .peek()
-                .filter(|tok| !matches!(tok.r#type(), TokenType::EOF))
-                .is_some()
+                .is_some_and(|tok| !matches!(tok.r#type(), TokenType::EOF))
         {
             let mut result = ParseResult::success(Schema {
                 declarations: Vec::new(),
@@ -462,7 +461,12 @@ impl DefaultSchemaParser {
                 TokenType::Model
                 | TokenType::Enum
                 | TokenType::DataSource
-                | TokenType::Generator => {
+                | TokenType::Generator
+                    if brace_depth == 0
+                        || Self::looks_like_nested_block_start(
+                            stream, offset,
+                        ) =>
+                {
                     if in_block && !current.is_empty() {
                         blocks.push(Block {
                             index: next_index,
@@ -539,6 +543,30 @@ impl DefaultSchemaParser {
         }
 
         blocks
+    }
+
+    /// Return whether a declaration keyword found deep inside a block should
+    /// begin a new (recovery) block rather than be treated as content.
+    ///
+    /// `model`/`enum`/`datasource`/`generator` are contextual keywords: inside
+    /// a block body they usually name a field or appear in a reference (e.g. a
+    /// field `model String` or `@@index([model])`). They only signal a genuine
+    /// nested or unclosed declaration when followed by an identifier and an
+    /// opening brace (`model Recovered {`), which is the only shape treated as
+    /// a block start here.
+    fn looks_like_nested_block_start(
+        stream: &dyn TokenStream,
+        offset: usize,
+    ) -> bool {
+        matches!(
+            Self::peek_ahead_non_comment(stream, offset + 1, 0)
+                .map(Token::r#type),
+            Some(TokenType::Identifier(_))
+        ) && matches!(
+            Self::peek_ahead_non_comment(stream, offset + 1, 1)
+                .map(Token::r#type),
+            Some(TokenType::LeftBrace)
+        )
     }
 
     fn is_top_level_type_decl_start(
@@ -1164,6 +1192,35 @@ mod tests {
             t(TokenType::LeftBrace),
             t(TokenType::Type),
             ident("AvailabilityOverrideType"),
+            t(TokenType::RightBrace),
+            t(TokenType::EOF),
+        ];
+        let stream = VectorTokenStream::new(toks);
+
+        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
+    }
+
+    #[test]
+    fn identify_blocks_keeps_contextual_keyword_field_inside_model_block() {
+        // model AuditLog {
+        //   model String
+        //   @@index([model])
+        // }
+        let toks = vec![
+            t(TokenType::Model),
+            ident("AuditLog"),
+            t(TokenType::LeftBrace),
+            t(TokenType::Model),
+            t(TokenType::String),
+            t(TokenType::DoubleAt),
+            ident("index"),
+            t(TokenType::LeftParen),
+            t(TokenType::LeftBracket),
+            t(TokenType::Model),
+            t(TokenType::RightBracket),
+            t(TokenType::RightParen),
             t(TokenType::RightBrace),
             t(TokenType::EOF),
         ];

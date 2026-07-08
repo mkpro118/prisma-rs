@@ -23,6 +23,7 @@ use super::attributes::{BlockAttributeParser, FieldAttributeParser};
 use super::expressions::ExpressionParser;
 use super::helpers::parse_leading_docs;
 use super::helpers::span_from_to;
+use super::primitives::identifier_text;
 use super::types::TypeRefParser;
 
 /// Clone the span from a token.
@@ -31,18 +32,20 @@ fn tspan(t: &Token) -> SymbolSpan {
 }
 
 /// Convert an identifier token into an `Ident` AST node.
+///
+/// Accepts ordinary identifiers and contextual keywords (`type`, `model`,
+/// `enum`, `datasource`, `generator`) so they can serve as field names and
+/// enum values, matching Prisma.
 fn ident_from_token(tok: &Token) -> Option<Ident> {
-    match tok.r#type() {
-        TokenType::Identifier(s) => Some(Ident {
-            text: s.clone(),
-            span: tspan(tok),
-        }),
-        TokenType::Type => Some(Ident {
-            text: "type".to_string(),
-            span: tspan(tok),
-        }),
-        _ => None,
-    }
+    identifier_text(tok.r#type()).map(|text| Ident {
+        text: text.to_string(),
+        span: tspan(tok),
+    })
+}
+
+/// Return whether a token can begin a member name (field or enum value).
+fn starts_member_name(token_type: &TokenType) -> bool {
+    identifier_text(token_type).is_some()
 }
 
 /// Build an error diagnostic at `current` or a default position.
@@ -252,9 +255,9 @@ impl Parser<EnumValue> for EnumValueParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        stream.peek_non_comment().is_some_and(|t| {
-            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::Type)
-        })
+        stream
+            .peek_non_comment()
+            .is_some_and(|t| starts_member_name(t.r#type()))
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
@@ -435,9 +438,9 @@ impl Parser<FieldDecl> for FieldDeclParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        stream.peek_non_comment().is_some_and(|t| {
-            matches!(t.r#type(), TokenType::Identifier(_) | TokenType::Type)
-        })
+        stream
+            .peek_non_comment()
+            .is_some_and(|t| starts_member_name(t.r#type()))
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
@@ -512,12 +515,8 @@ impl Parser<ModelMember> for ModelMemberParser {
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
         if let Some(t) = stream.peek_non_comment() {
-            matches!(
-                t.r#type(),
-                TokenType::Identifier(_)
-                    | TokenType::Type
-                    | TokenType::DoubleAt
-            )
+            starts_member_name(t.r#type())
+                || matches!(t.r#type(), TokenType::DoubleAt)
         } else {
             false
         }
@@ -597,12 +596,8 @@ impl Parser<EnumMember> for EnumMemberParser {
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
         if let Some(t) = stream.peek_non_comment() {
-            matches!(
-                t.r#type(),
-                TokenType::Identifier(_)
-                    | TokenType::Type
-                    | TokenType::DoubleAt
-            )
+            starts_member_name(t.r#type())
+                || matches!(t.r#type(), TokenType::DoubleAt)
         } else {
             false
         }
@@ -1091,6 +1086,56 @@ mod tests {
         assert_eq!(a.name.parts[0].text, "db");
         assert_eq!(a.name.parts[1].text, "VarChar");
         assert!(a.args.is_some());
+    }
+
+    #[test]
+    fn field_decl_named_with_contextual_keyword_model() {
+        // model String @map("model")
+        let mut s = V(
+            vec![
+                tok(TokenType::Model, (1, 1), (1, 6)),
+                tok(TokenType::String, (1, 7), (1, 13)),
+                tok(TokenType::At, (1, 14), (1, 15)),
+                tok(TokenType::Identifier("map".into()), (1, 15), (1, 18)),
+                tok(TokenType::LeftParen, (1, 18), (1, 19)),
+                tok(TokenType::Literal("\"model\"".into()), (1, 19), (1, 26)),
+                tok(TokenType::RightParen, (1, 26), (1, 27)),
+            ],
+            0,
+        );
+
+        let p = FieldDeclParser;
+        assert!(p.can_parse(&s), "field starting with `model` should parse");
+        let mut p = FieldDeclParser;
+        let res = p.parse(
+            &mut s,
+            &crate::core::parser::config::ParserOptions::default(),
+        );
+        assert!(res.is_success(), "diagnostics: {:?}", res.diagnostics);
+        let field = res.value.expect("expected FieldDecl");
+        assert_eq!(field.name.text, "model");
+        assert_eq!(field.attrs.len(), 1);
+        match field.r#type {
+            TypeRef::Named(NamedType { ref name, .. }) => {
+                assert_eq!(name.as_simple().unwrap().text, "String");
+            }
+            TypeRef::List(_) => panic!("expected Named(String)"),
+        }
+    }
+
+    #[test]
+    fn enum_value_named_with_contextual_keyword_enum() {
+        // enum  (an enum value literally named `enum`)
+        let mut s = V(vec![tok(TokenType::Enum, (1, 1), (1, 5))], 0);
+        let p = EnumValueParser;
+        assert!(p.can_parse(&s));
+        let mut p = EnumValueParser;
+        let res = p.parse(
+            &mut s,
+            &crate::core::parser::config::ParserOptions::default(),
+        );
+        assert!(res.is_success(), "diagnostics: {:?}", res.diagnostics);
+        assert_eq!(res.value.expect("EnumValue").name.text, "enum");
     }
 
     #[test]

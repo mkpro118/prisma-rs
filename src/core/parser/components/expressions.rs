@@ -6,7 +6,8 @@
 //! and trailing commas are accepted in arrays and objects.
 
 use crate::core::parser::components::{
-    attributes::ArgListParser, primitives::QualifiedIdentParser,
+    attributes::ArgListParser,
+    primitives::{QualifiedIdentParser, identifier_text},
 };
 use crate::core::parser::stream::TokenStreamExt;
 use crate::core::parser::{
@@ -139,9 +140,12 @@ impl ExpressionParser {
     }
 
     /// Return whether a token can start an identifier reference or function call.
+    ///
+    /// Includes contextual keywords (`type`, `model`, `enum`, `datasource`,
+    /// `generator`) so references like `@@index([model])` parse.
     #[must_use]
     fn is_ident_like_token(token_type: &TokenType) -> bool {
-        matches!(token_type, TokenType::Identifier(_) | TokenType::Type)
+        identifier_text(token_type).is_some()
     }
 
     /// Parse a numeric literal efficiently.
@@ -475,11 +479,7 @@ impl ExpressionParser {
     ) -> ParseResult<Vec<Expr>> {
         let mut elements = Vec::with_capacity(8);
 
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
+        while let Some(token) = stream.peek() {
             if matches!(token.r#type(), TokenType::RightBracket) {
                 break;
             }
@@ -625,11 +625,9 @@ impl ExpressionParser {
         match stream.peek() {
             Some(token) if Self::is_ident_like_token(token.r#type()) => {
                 if let Some(token) = stream.next() {
-                    let text = match token.r#type() {
-                        TokenType::Identifier(text) => text.clone(),
-                        TokenType::Type => "type".to_string(),
-                        _ => unreachable!("Token type was checked"),
-                    };
+                    let text = identifier_text(token.r#type())
+                        .unwrap_or_default()
+                        .to_string();
                     ParseResult::success(ObjectKey::Ident(
                         crate::core::parser::ast::Ident {
                             text,
@@ -795,11 +793,7 @@ impl ExpressionParser {
     ) -> ParseResult<Vec<ObjectEntry>> {
         let mut entries = Vec::with_capacity(4);
 
-        loop {
-            let Some(token) = stream.peek() else {
-                break;
-            };
-
+        while let Some(token) = stream.peek() {
             if matches!(token.r#type(), TokenType::RightBrace) {
                 break;
             }
@@ -992,18 +986,20 @@ impl Parser<Expr> for ExpressionParser {
     }
 
     fn can_parse(&self, stream: &dyn TokenStream) -> bool {
-        matches!(
-            stream.peek_non_comment().map(Token::r#type),
-            Some(
-                TokenType::Literal(_)
-                    | TokenType::Identifier(_)
-                    | TokenType::Type
-                    | TokenType::List
-                    | TokenType::LeftBracket
-                    | TokenType::LeftBrace
-                    | TokenType::LeftParen
-            )
-        )
+        stream
+            .peek_non_comment()
+            .map(Token::r#type)
+            .is_some_and(|tt| {
+                Self::is_ident_like_token(tt)
+                    || matches!(
+                        tt,
+                        TokenType::Literal(_)
+                            | TokenType::List
+                            | TokenType::LeftBracket
+                            | TokenType::LeftBrace
+                            | TokenType::LeftParen
+                    )
+            })
     }
 
     fn sync_tokens(&self) -> &[TokenType] {
@@ -1465,8 +1461,9 @@ mod tests {
             assert!(parser.can_parse(&stream));
         }
 
-        // Test invalid expression tokens
-        let tokens = vec![create_test_token(TokenType::Model)];
+        // Test invalid expression tokens (`Int` is a scalar keyword and is
+        // never a valid expression start, unlike contextual keywords).
+        let tokens = vec![create_test_token(TokenType::Int)];
         let stream = VectorTokenStream::new(tokens);
         assert!(!parser.can_parse(&stream));
     }
@@ -1489,7 +1486,7 @@ mod tests {
         // Test with comments but wrong token
         let tokens = vec![
             create_test_token(TokenType::Comment("// comment".to_string())),
-            create_test_token(TokenType::Model),
+            create_test_token(TokenType::Int),
         ];
         let stream = VectorTokenStream::new(tokens);
         assert!(!parser.can_parse(&stream));
