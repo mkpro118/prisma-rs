@@ -123,6 +123,22 @@ pub trait TokenStream {
 
     /// Restore the stream to a previous checkpoint.
     fn restore(&mut self, checkpoint: usize);
+
+    /// Consume the stream, returning the tokens from the current position
+    /// onward.
+    ///
+    /// Afterwards `is_at_end()` is true and the returned tokens are no longer
+    /// available from the stream. The default calls `next` until it returns
+    /// `None` (the filtered and observed streams use it); streams that own
+    /// their tokens override it to move them out in one step instead of
+    /// cloning each token.
+    fn take_remaining(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        while let Some(token) = self.next() {
+            tokens.push(token);
+        }
+        tokens
+    }
 }
 
 /// Parse a language construct from tokens.
@@ -205,6 +221,10 @@ pub trait Parser<T> {
 /// whole schema.
 pub trait SchemaParser: Parser<Schema> {
     /// Parse a complete schema from start to finish.
+    ///
+    /// Implementations may consume the stream (the default schema parser
+    /// takes all remaining tokens via `TokenStream::take_remaining`), so a
+    /// stream must not be reused for a second parse without being rebuilt.
     fn parse_schema(
         &mut self,
         stream: &mut dyn TokenStream,
@@ -515,6 +535,6 @@ mod tests {
         )]);
         let res = p.parse(&mut s, &ParserOptions::default());
         assert!(res.is_success());
-        assert!(p.sync_tokens().is_empty());
+        assert_eq!(p.sync_tokens(), []);
     }
 }

@@ -132,6 +132,12 @@ impl TokenStream for VectorTokenStream {
     fn restore(&mut self, checkpoint: usize) {
         self.position = checkpoint.min(self.tokens.len());
     }
+
+    fn take_remaining(&mut self) -> Vec<Token> {
+        let start = self.position.min(self.tokens.len());
+        self.position = start;
+        self.tokens.split_off(start)
+    }
 }
 
 /// A token stream that filters out specific token types.
