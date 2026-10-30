@@ -48,6 +48,15 @@ fn starts_member_name(token_type: &TokenType) -> bool {
     identifier_text(token_type).is_some()
 }
 
+/// Return whether the next significant token is `@@`, looking past any doc
+/// comments so `/// docs` before a block attribute attach to that attribute
+/// instead of being taken as the start of a field.
+fn starts_block_attribute(stream: &dyn TokenStream) -> bool {
+    stream
+        .peek_non_comment()
+        .is_some_and(|token| matches!(token.r#type(), TokenType::DoubleAt))
+}
+
 /// Build an error diagnostic at `current` or a default position.
 fn expected_diag(current: Option<&Token>, msg: &str) -> Diagnostic {
     let span = current.map_or(
@@ -484,7 +493,7 @@ impl Parser<ModelMember> for ModelMemberParser {
         stream: &mut dyn TokenStream,
         options: &crate::core::parser::config::ParserOptions,
     ) -> ParseResult<ModelMember> {
-        if stream.check(TokenType::DoubleAt) {
+        if starts_block_attribute(stream) {
             let mut p = BlockAttributeParser::default();
             let mut r = p.parse(stream, options);
             if let Some(attr) = r.value.take() {
@@ -563,7 +572,7 @@ impl Parser<EnumMember> for EnumMemberParser {
         stream: &mut dyn TokenStream,
         options: &crate::core::parser::config::ParserOptions,
     ) -> ParseResult<EnumMember> {
-        if stream.check(TokenType::DoubleAt) {
+        if starts_block_attribute(stream) {
             let mut p = BlockAttributeParser::default();
             let mut r = p.parse(stream, options);
             if let Some(attr) = r.value.take() {
