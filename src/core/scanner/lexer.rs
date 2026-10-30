@@ -565,78 +565,101 @@ impl KeywordRecognizer {
         Self
     }
 
-    fn keywords() -> &'static std::collections::HashMap<&'static str, TokenType>
-    {
-        use std::sync::OnceLock;
-        static MAP: OnceLock<
-            std::collections::HashMap<&'static str, TokenType>,
-        > = OnceLock::new();
-        MAP.get_or_init(|| {
-            let mut keywords = std::collections::HashMap::new();
-            keywords.insert("generator", TokenType::Generator);
-            keywords.insert("datasource", TokenType::DataSource);
-            keywords.insert("model", TokenType::Model);
-            keywords.insert("enum", TokenType::Enum);
-            keywords.insert("type", TokenType::Type);
-            keywords.insert("String", TokenType::String);
-            keywords.insert("Int", TokenType::Int);
-            keywords.insert("Float", TokenType::Float);
-            keywords.insert("Boolean", TokenType::Boolean);
-            keywords.insert("DateTime", TokenType::DateTime);
-            keywords.insert("Json", TokenType::Json);
-            keywords.insert("Bytes", TokenType::Bytes);
-            keywords.insert("Decimal", TokenType::Decimal);
-            keywords
-        })
-    }
+    /// Match the word at the cursor against the keyword set without
+    /// allocating, returning the token and the word's length in characters.
+    ///
+    /// Every keyword is ASCII and at most `MAX_KEYWORD_LEN` long, so the scan
+    /// stops as soon as the word is too long or is not valid ASCII.
+    fn scan_keyword(input: &dyn CharacterStream) -> Option<(TokenType, usize)> {
+        let mut buffer = [0_u8; MAX_KEYWORD_LEN];
+        let mut length = 0;
 
-    fn peek_identifier(input: &dyn CharacterStream) -> String {
-        let mut word = String::new();
-        let mut offset = 0;
-
-        while let Some(ch) = input.peek(offset) {
-            if ch.is_alphanumeric() || ch == '_' {
-                word.push(ch);
-                offset += 1;
-            } else {
+        while let Some(ch) = input.peek(length) {
+            if !(ch.is_alphanumeric() || ch == '_') {
                 break;
             }
+            // Fails for characters above U+00FF; characters in U+0080..=U+00FF
+            // fit a byte but make the buffer invalid UTF-8 below.
+            *buffer.get_mut(length)? = u8::try_from(ch).ok()?;
+            length += 1;
         }
-        word
+
+        let word = std::str::from_utf8(buffer.get(..length)?).ok()?;
+        keyword_token(word).map(|token_type| (token_type, length))
     }
+}
 
-    fn consume_identifier(input: &mut dyn CharacterStream) -> String {
-        let mut word = String::new();
+/// Declare the keyword spellings once so the lookup and the longest-keyword
+/// bound derived from them cannot drift apart.
+macro_rules! keywords {
+    ($($spelling:literal => $variant:ident),* $(,)?) => {
+        /// Every keyword spelling.
+        const KEYWORD_SPELLINGS: &[&str] = &[$($spelling),*];
 
-        while let Some(ch) = input.current() {
-            if ch.is_alphanumeric() || ch == '_' {
-                word.push(ch);
-                input.advance();
-            } else {
-                break;
+        /// Map a complete word to its keyword token, if it is one.
+        fn keyword_token(word: &str) -> Option<TokenType> {
+            match word {
+                $($spelling => Some(TokenType::$variant),)*
+                _ => None,
             }
         }
-        word
+    };
+}
+
+keywords! {
+    "generator" => Generator,
+    "datasource" => DataSource,
+    "model" => Model,
+    "enum" => Enum,
+    "type" => Type,
+    "String" => String,
+    "Int" => Int,
+    "Float" => Float,
+    "Boolean" => Boolean,
+    "DateTime" => DateTime,
+    "Json" => Json,
+    "Bytes" => Bytes,
+    "Decimal" => Decimal,
+}
+
+/// Length in bytes of the longest keyword spelling.
+const MAX_KEYWORD_LEN: usize = longest_spelling(KEYWORD_SPELLINGS);
+
+const fn longest_spelling(spellings: &[&str]) -> usize {
+    let mut longest = 0;
+    let mut remaining = spellings;
+    while let [first, rest @ ..] = remaining {
+        if first.len() > longest {
+            longest = first.len();
+        }
+        remaining = rest;
     }
+    longest
 }
 
 impl TokenRecognizer for KeywordRecognizer {
     fn can_handle(&self, input: &dyn CharacterStream) -> bool {
-        if let Some(ch) = input.current()
-            && (ch.is_alphabetic() || ch == '_')
-        {
-            let word = Self::peek_identifier(input);
-            return Self::keywords().contains_key(word.as_str());
-        }
-        false
+        Self::scan_keyword(input).is_some()
     }
 
     fn consume(
         &self,
         input: &mut dyn CharacterStream,
     ) -> Result<TokenType, LexError> {
-        let word = Self::consume_identifier(input);
-        Ok(Self::keywords()[word.as_str()].clone())
+        let Some((token_type, length)) = Self::scan_keyword(input) else {
+            let pos = input.position().to_symbol_location();
+            return Err(LexError::new(
+                "Expected a keyword at this position".to_owned(),
+                SymbolSpan {
+                    start: pos.clone(),
+                    end: pos,
+                },
+            ));
+        };
+        for _ in 0..length {
+            input.advance();
+        }
+        Ok(token_type)
     }
 }
 
@@ -989,6 +1012,10 @@ impl Default for IdentifierRecognizer {
     }
 }
 
+/// Initial capacity of an identifier's string. Prisma identifiers are
+/// usually short, so this avoids regrowth without over-allocating.
+const IDENTIFIER_CAPACITY: usize = 24;
+
 impl IdentifierRecognizer {
     /// Create an identifier recognizer.
     #[must_use]
@@ -1010,7 +1037,7 @@ impl TokenRecognizer for IdentifierRecognizer {
         &self,
         input: &mut dyn CharacterStream,
     ) -> Result<TokenType, LexError> {
-        let mut identifier = String::new();
+        let mut identifier = String::with_capacity(IDENTIFIER_CAPACITY);
 
         while let Some(ch) = input.current() {
             if !ch.is_ascii() {
