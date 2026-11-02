@@ -360,7 +360,7 @@ fn token_count_accuracy() {
 fn native_type_attribute_with_scalar_keyword_name() {
     // `@db.Decimal(10, 2)` names a native type whose segment after the dot
     // collides with the reserved `Decimal` scalar keyword. This must parse
-    // cleanly (regression for the Hipp schema diagnostics).
+    // cleanly.
     let input = r#"
 model Invoice {
   amount Decimal @map("amount") @db.Decimal(10, 2)
@@ -412,8 +412,7 @@ model Invoice {
 #[test]
 fn contextual_keyword_as_field_name_and_reference() {
     // `model` is a contextual keyword: it can name a field and be referenced
-    // in a block attribute. This mirrors the AuditLog model in the Hipp
-    // schema (regression for the remaining parse diagnostics).
+    // in a block attribute, as in an audit log that records the model name.
     let input = r#"
 model AuditLog {
   id    Int    @id @default(autoincrement())
