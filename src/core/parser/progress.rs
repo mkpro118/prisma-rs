@@ -55,6 +55,9 @@ impl ProgressConfig for ParserOptions {
     }
 }
 
+/// Largest number of tokens between `allow_continue` calls.
+const MAX_CHECK_INTERVAL: usize = 16;
+
 /// Observe token consumption and provide continuation decisions.
 pub trait ProgressObserver: Send + Sync {
     fn on_advance(
@@ -64,6 +67,13 @@ pub trait ProgressObserver: Send + Sync {
         current: Option<&TokenType>,
     );
 
+    /// Return whether the parser may keep consuming tokens.
+    ///
+    /// `ObservedTokenStream` calls this on its first token and then once per
+    /// `min(max(report_interval, 1), 16)` tokens (an interval of 0 means every
+    /// token), so an observer must not rely on being asked per token when the
+    /// interval exceeds 1. Returning `false` makes the
+    /// stream yield `EOF` from then on.
     fn allow_continue(&self, parser_id: usize) -> bool;
     fn max_duration(&self) -> Duration;
 
@@ -163,6 +173,11 @@ pub struct ObservedTokenStream<'a> {
     parser_id: usize,
     last_reported_position: usize,
     report_interval: usize,
+    // Tokens between `allow_continue` calls: `report_interval`, capped so a
+    // large interval cannot postpone cancellation.
+    check_interval: usize,
+    // Calls to `next` since the observer was last asked whether to continue.
+    calls_since_check: usize,
     cutoff: bool,
     eof_emitted: bool,
 }
@@ -176,12 +191,15 @@ impl<'a> ObservedTokenStream<'a> {
         report_interval: usize,
     ) -> Self {
         let pos = inner.position();
+        let report_interval = report_interval.max(1);
         Self {
             inner,
             supervisor,
             parser_id,
             last_reported_position: pos,
-            report_interval: report_interval.max(1),
+            report_interval,
+            check_interval: report_interval.min(MAX_CHECK_INTERVAL),
+            calls_since_check: 0,
             cutoff: false,
             eof_emitted: false,
         }
@@ -212,7 +230,12 @@ impl TokenStream for ObservedTokenStream<'_> {
             return Some(Token::new(TokenType::EOF, (1, 1), (1, 1)));
         }
 
-        if !self.supervisor.allow_continue(self.parser_id) {
+        // Asking the observer on every token costs a lock and a clock read.
+        // Check on the first token and then once per `check_interval`.
+        let check_due = self.calls_since_check == 0;
+        self.calls_since_check =
+            (self.calls_since_check + 1) % self.check_interval;
+        if check_due && !self.supervisor.allow_continue(self.parser_id) {
             self.cutoff = true;
             self.eof_emitted = true;
             return Some(Token::new(TokenType::EOF, (1, 1), (1, 1)));

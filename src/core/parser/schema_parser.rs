@@ -19,6 +19,7 @@ use crate::core::scanner::tokens::{
     SymbolLocation, SymbolSpan, Token, TokenType,
 };
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::Arc;
 use std::thread;
 
@@ -202,17 +203,24 @@ impl DefaultSchemaParser {
     }
 
     /// Parse a complete schema, selecting sequential or concurrent strategy.
+    ///
+    /// The stream's remaining tokens are moved into the declaration blocks
+    /// (see `TokenStream::take_remaining`), so an owning stream such as
+    /// `VectorTokenStream` is left at its end afterwards.
     pub fn parse_schema(
         &mut self,
         stream: &mut dyn TokenStream,
         options: &ParserOptions,
     ) -> ParseResult<Schema> {
         // Identify blocks once, use result for mode decision.
-        let blocks = Self::identify_blocks(stream);
+        let tokens = stream.take_remaining();
+        let first_token_span = tokens
+            .first()
+            .filter(|tok| !matches!(tok.r#type(), TokenType::EOF))
+            .map(|tok| tok.span().clone());
+        let blocks = Self::identify_blocks(tokens);
         if blocks.is_empty()
-            && stream
-                .peek()
-                .is_some_and(|tok| !matches!(tok.r#type(), TokenType::EOF))
+            && let Some(span) = first_token_span
         {
             let mut result = ParseResult::success(Schema {
                 declarations: Vec::new(),
@@ -221,13 +229,6 @@ impl DefaultSchemaParser {
                     end: SymbolLocation { line: 1, column: 1 },
                 },
             });
-            let span = stream.peek().map_or(
-                SymbolSpan {
-                    start: SymbolLocation { line: 1, column: 1 },
-                    end: SymbolLocation { line: 1, column: 1 },
-                },
-                |t| t.span().clone(),
-            );
             result.diagnostics.push(Diagnostic::error(
                 span,
                 "Unexpected token - expected top-level declaration",
@@ -441,108 +442,79 @@ impl DefaultSchemaParser {
         SymbolSpan { start, end }
     }
 
-    /// Identify top-level declaration blocks with their original indices.
-    fn identify_blocks(stream: &dyn TokenStream) -> Vec<Block> {
-        let mut blocks = Vec::new();
-        let mut current = Vec::new();
-        let mut brace_depth = 0usize;
-        let mut in_block = false;
-        let mut offset = 0usize;
-        let mut next_index = 0usize;
-        // Pending doc comments that directly precede a block
-        let mut pending_docs: Vec<Token> = Vec::new();
+    /// Split `tokens` into top-level declaration blocks with their original
+    /// indices, moving each token into its block.
+    fn identify_blocks(tokens: Vec<Token>) -> Vec<Block> {
+        let ranges = Self::block_ranges(&tokens);
+        let mut remaining = tokens.into_iter();
+        let mut consumed = 0usize;
+        let mut blocks = Vec::with_capacity(ranges.len());
 
-        while let Some(token) = stream.peek_ahead(offset) {
+        // Relies on `block_ranges` returning ranges that are ascending and
+        // non-overlapping, so the token iterator only ever moves forward.
+        for (index, range) in ranges.into_iter().enumerate() {
+            let skipped = range.start.saturating_sub(consumed);
+            let block_tokens: Vec<Token> =
+                remaining.by_ref().skip(skipped).take(range.len()).collect();
+            consumed = range.end;
+            blocks.push(Block {
+                index,
+                tokens: block_tokens,
+            });
+        }
+
+        blocks
+    }
+
+    /// Locate each declaration block as a contiguous range of `tokens`.
+    ///
+    /// A block runs from its doc comments (or keyword) through its closing
+    /// brace, or up to the next declaration keyword or end of input when it is
+    /// never closed. Tokens outside any block are ignored.
+    fn block_ranges(tokens: &[Token]) -> Vec<Range<usize>> {
+        let mut scan = BlockScan::default();
+
+        for (offset, token) in tokens.iter().enumerate() {
             match token.r#type() {
                 // Accumulate doc comments until a declaration keyword, reset on other noise
-                TokenType::DocComment(_) if !in_block => {
-                    pending_docs.push(token.clone());
+                TokenType::DocComment(_) if !scan.in_block() => {
+                    scan.note_doc_comment(offset);
                 }
                 TokenType::Model
                 | TokenType::Enum
                 | TokenType::DataSource
                 | TokenType::Generator
-                    if brace_depth == 0
+                    if scan.at_top_level()
                         || Self::looks_like_nested_block_start(
-                            stream, offset,
+                            tokens, offset,
                         ) =>
                 {
-                    if in_block && !current.is_empty() {
-                        blocks.push(Block {
-                            index: next_index,
-                            tokens: current,
-                        });
-                        next_index += 1;
-                        current = Vec::new();
-                    }
-                    in_block = true;
-                    brace_depth = 0;
-                    // Prepend any pending docs to the new block
-                    if !pending_docs.is_empty() {
-                        current.append(&mut pending_docs);
-                    }
-                    current.push(token.clone());
+                    scan.begin_block(offset);
                 }
                 TokenType::Type
-                    if !in_block
+                    if !scan.in_block()
                         || Self::is_top_level_type_decl_start(
-                            stream, offset,
+                            tokens, offset,
                         ) =>
                 {
-                    if in_block && !current.is_empty() {
-                        blocks.push(Block {
-                            index: next_index,
-                            tokens: current,
-                        });
-                        next_index += 1;
-                        current = Vec::new();
-                    }
-                    in_block = true;
-                    brace_depth = 0;
-                    if !pending_docs.is_empty() {
-                        current.append(&mut pending_docs);
-                    }
-                    current.push(token.clone());
+                    scan.begin_block(offset);
                 }
-                TokenType::LeftBrace if in_block => {
-                    brace_depth += 1;
-                    current.push(token.clone());
+                TokenType::LeftBrace if scan.in_block() => {
+                    scan.open_brace();
                 }
-                TokenType::RightBrace if in_block => {
-                    current.push(token.clone());
-                    brace_depth = brace_depth.saturating_sub(1);
-                    if brace_depth == 0 {
-                        blocks.push(Block {
-                            index: next_index,
-                            tokens: current,
-                        });
-                        next_index += 1;
-                        current = Vec::new();
-                        in_block = false;
-                    }
+                TokenType::RightBrace if scan.in_block() => {
+                    scan.close_brace(offset);
                 }
-                TokenType::EOF => {
-                    break;
-                }
-                _ if in_block => {
-                    current.push(token.clone());
-                }
+                TokenType::EOF => return scan.into_ranges(offset),
+                _ if scan.in_block() => {}
                 _ => {
                     // Any non-doc token outside a block clears pending docs
-                    pending_docs.clear();
+                    scan.drop_pending_docs();
                 }
             }
-            offset += 1;
         }
 
-        if !current.is_empty() {
-            blocks.push(Block {
-                index: next_index,
-                tokens: current,
-            });
-        }
-
-        blocks
+        scan.into_ranges(tokens.len())
     }
 
     /// Return whether a declaration keyword found deep inside a block should
@@ -554,42 +526,36 @@ impl DefaultSchemaParser {
     /// nested or unclosed declaration when followed by an identifier and an
     /// opening brace (`model Recovered {`), which is the only shape treated as
     /// a block start here.
-    fn looks_like_nested_block_start(
-        stream: &dyn TokenStream,
-        offset: usize,
-    ) -> bool {
+    fn looks_like_nested_block_start(tokens: &[Token], offset: usize) -> bool {
         matches!(
-            Self::peek_ahead_non_comment(stream, offset + 1, 0)
+            Self::peek_ahead_non_comment(tokens, offset + 1, 0)
                 .map(Token::r#type),
             Some(TokenType::Identifier(_))
         ) && matches!(
-            Self::peek_ahead_non_comment(stream, offset + 1, 1)
+            Self::peek_ahead_non_comment(tokens, offset + 1, 1)
                 .map(Token::r#type),
             Some(TokenType::LeftBrace)
         )
     }
 
-    fn is_top_level_type_decl_start(
-        stream: &dyn TokenStream,
-        offset: usize,
-    ) -> bool {
+    fn is_top_level_type_decl_start(tokens: &[Token], offset: usize) -> bool {
         matches!(
-            Self::peek_ahead_non_comment(stream, offset + 1, 0)
+            Self::peek_ahead_non_comment(tokens, offset + 1, 0)
                 .map(Token::r#type),
             Some(TokenType::Identifier(_))
         ) && matches!(
-            Self::peek_ahead_non_comment(stream, offset + 1, 1)
+            Self::peek_ahead_non_comment(tokens, offset + 1, 1)
                 .map(Token::r#type),
             Some(TokenType::Assign)
         )
     }
 
     fn peek_ahead_non_comment(
-        stream: &dyn TokenStream,
+        tokens: &[Token],
         mut raw_offset: usize,
         mut target_offset: usize,
     ) -> Option<&Token> {
-        while let Some(token) = stream.peek_ahead(raw_offset) {
+        while let Some(token) = tokens.get(raw_offset) {
             match token.r#type() {
                 TokenType::Comment(_) | TokenType::DocComment(_) => {
                     raw_offset += 1;
@@ -627,6 +593,72 @@ impl SchemaParser for DefaultSchemaParser {}
 struct Block {
     index: usize,
     tokens: Vec<Token>,
+}
+
+/// Running state while locating declaration blocks in a token slice.
+#[derive(Debug, Default)]
+struct BlockScan {
+    ranges: Vec<Range<usize>>,
+    // Offset of the first token of the block being scanned, if inside one.
+    block_start: Option<usize>,
+    brace_depth: usize,
+    // Offset of the first doc comment directly preceding the next block.
+    pending_docs_start: Option<usize>,
+}
+
+impl BlockScan {
+    #[must_use]
+    fn in_block(&self) -> bool {
+        self.block_start.is_some()
+    }
+
+    /// Whether no braces are open, so a declaration keyword starts a block.
+    #[must_use]
+    fn at_top_level(&self) -> bool {
+        self.brace_depth == 0
+    }
+
+    fn note_doc_comment(&mut self, offset: usize) {
+        self.pending_docs_start.get_or_insert(offset);
+    }
+
+    fn drop_pending_docs(&mut self) {
+        self.pending_docs_start = None;
+    }
+
+    fn open_brace(&mut self) {
+        self.brace_depth += 1;
+    }
+
+    /// Start a block at `offset`, ending any unclosed block just before it.
+    fn begin_block(&mut self, offset: usize) {
+        self.finish(offset);
+        self.brace_depth = 0;
+        // Pending doc comments become the head of the new block.
+        self.block_start =
+            Some(self.pending_docs_start.take().unwrap_or(offset));
+    }
+
+    /// Consume a `}` at `offset`, closing the block when braces balance.
+    fn close_brace(&mut self, offset: usize) {
+        self.brace_depth = self.brace_depth.saturating_sub(1);
+        if self.brace_depth == 0 {
+            self.finish(offset + 1);
+        }
+    }
+
+    /// End the open block, if any, so that it covers tokens up to `end`.
+    fn finish(&mut self, end: usize) {
+        if let Some(start) = self.block_start.take() {
+            self.ranges.push(start..end);
+        }
+    }
+
+    /// End any unclosed block at `end` and return every block range.
+    fn into_ranges(mut self, end: usize) -> Vec<Range<usize>> {
+        self.finish(end);
+        self.ranges
+    }
 }
 
 #[cfg(test)]
@@ -1195,9 +1227,7 @@ mod tests {
             t(TokenType::RightBrace),
             t(TokenType::EOF),
         ];
-        let stream = VectorTokenStream::new(toks);
-
-        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        let blocks = DefaultSchemaParser::identify_blocks(toks);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
     }
@@ -1224,9 +1254,7 @@ mod tests {
             t(TokenType::RightBrace),
             t(TokenType::EOF),
         ];
-        let stream = VectorTokenStream::new(toks);
-
-        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        let blocks = DefaultSchemaParser::identify_blocks(toks);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
     }
@@ -1245,9 +1273,7 @@ mod tests {
             t(TokenType::RightBrace),
             t(TokenType::EOF),
         ];
-        let stream = VectorTokenStream::new(toks);
-
-        let blocks = DefaultSchemaParser::identify_blocks(&stream);
+        let blocks = DefaultSchemaParser::identify_blocks(toks);
         assert_eq!(blocks.len(), 2);
         assert!(matches!(blocks[0].tokens[0].r#type(), TokenType::Model));
         assert!(matches!(blocks[1].tokens[0].r#type(), TokenType::Model));

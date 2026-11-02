@@ -6,8 +6,9 @@
 //! and accept trailing commas in argument lists.
 
 use crate::core::parser::components::{
-    expressions::ExpressionParser, helpers::parse_leading_docs,
-    primitives::QualifiedIdentParser,
+    expressions::ExpressionParser,
+    helpers::parse_leading_docs,
+    primitives::{QualifiedIdentParser, identifier_text},
 };
 use crate::core::parser::stream::TokenStreamExt;
 use crate::core::parser::{
@@ -68,8 +69,10 @@ impl ArgListParser {
         let checkpoint = stream.checkpoint();
 
         // Try to parse as named argument first
+        // Contextual keywords such as `type` are valid argument names
+        // (`@@index([a], type: Gin)`).
         if let Some(token) = stream.peek()
-            && matches!(token.r#type(), TokenType::Identifier(_))
+            && identifier_text(token.r#type()).is_some()
         {
             // Look ahead for colon, potentially after a qualified identifier
             let mut lookahead_offset = 1;

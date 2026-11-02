@@ -88,7 +88,10 @@ pub struct ParserOptions {
     pub stall_threshold: Duration,
     /// Whether to enable progress validation
     pub enable_progress_validation: bool,
-    /// Report every N token advances
+    /// Report every N token advances. The progress observer is also asked
+    /// whether to continue on its first token and then every
+    /// `min(max(report_interval, 1), 16)` tokens (an interval of 0 means
+    /// every token).
     pub report_interval: usize,
 }
 
