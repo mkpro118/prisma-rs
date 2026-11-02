@@ -1362,11 +1362,11 @@ mod tests {
         let type_parser = TypeDeclParser;
 
         // All declaration parsers should have synchronization tokens for recovery
-        assert!(!model_parser.sync_tokens().is_empty());
-        assert!(!enum_parser.sync_tokens().is_empty());
-        assert!(!datasource_parser.sync_tokens().is_empty());
-        assert!(!generator_parser.sync_tokens().is_empty());
-        assert!(!type_parser.sync_tokens().is_empty());
+        assert_ne!(model_parser.sync_tokens(), []);
+        assert_ne!(enum_parser.sync_tokens(), []);
+        assert_ne!(datasource_parser.sync_tokens(), []);
+        assert_ne!(generator_parser.sync_tokens(), []);
+        assert_ne!(type_parser.sync_tokens(), []);
 
         // They should all include top-level keywords for recovery
         assert!(model_parser.sync_tokens().contains(&TokenType::Model));
